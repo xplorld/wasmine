@@ -1,0 +1,6 @@
+[package]
+name = "wasmine"
+version = "0.1.0"
+authors = ["xplorld <xplorld@gmail.com>"]
+
+[dependencies]
