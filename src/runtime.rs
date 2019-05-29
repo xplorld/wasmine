@@ -336,9 +336,9 @@ pub fn step(ctx: &mut Context) -> bool {
                 false
             }
         }
-        Instr::BrTable(args) => panic!("not implemented"),
-        Instr::Return => panic!("not implemented"),
-        Instr::Call(idx) => panic!("not implemented"),
-        Instr::CallIndirect(idx) => panic!("not implemented"),
+        Instr::BrTable(args) => unimplemented!(),
+        Instr::Return => unimplemented!(),
+        Instr::Call(idx) => unimplemented!(),
+        Instr::CallIndirect(idx) => unimplemented!(),
     }
 }
