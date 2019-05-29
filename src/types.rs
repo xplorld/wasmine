@@ -31,7 +31,8 @@ pub enum ValType {
 // TODO: Val should have a handwritten PartialEq
 // to compare the content of the same variant
 #[derive(Debug)]
-#[derive(PartialEq)]
+#[derive(Clone)]
+#[derive(Copy)]
 pub enum Val {
     I32 { i: u32 },
     F32 { f: f32 },
@@ -165,14 +166,17 @@ pub struct BrTableArgs {
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
 pub struct Label {
-    pub arity: u32, // 0 or 1
+    pub arity: usize, // 0 or 1
     pub continuation: Idx,
 }
 
 #[derive(Debug)]
+#[derive(Clone)]
 pub struct Frame {
-    pub arity: u32, // 0 or 1
+    pub arity: usize, // 0 or 1
     pub locals: Vec<Val>,
     // module, but as long as we do not support cross module invocations,
     // we do not have to keep the ref.
