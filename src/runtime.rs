@@ -1,12 +1,19 @@
 use types::*;
 
+#[derive(Debug)]
 enum StackEntry {
     Val(Val),
     Label(Label),
-    Frame {
-        locals: Vec<Val>,
-        /* ModuleInst, which is always the same */
-    },
+    Frame(Frame),
+}
+
+impl StackEntry {
+    fn is_val(&self) -> bool {
+        match self {
+            StackEntry::Val(_) => true,
+            _ => false
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -28,28 +35,35 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    fn current_frame_locals(&self) -> Option<&mut Vec<Val>> {
+    /**
+     * By spec, during execution there are always at least 1 frames in the stack
+     * so there are no possibilities to return a `None`.
+     */
+    fn current_frame(&self) -> &mut Frame {
         for entry in self.stack.iter_mut().rev() {
             match entry {
-                StackEntry::Frame { locals: val } => {
-                    return Option::Some(val);
+                StackEntry::Frame(frame) => {
+                    return frame;
                 }
                 _ => {}
             }
         }
-        Option::None
+        panic!("impossible")
     }
 
-    fn pop_value_or_panic(&self) -> Val {
-        if let Some(StackEntry::Val(val)) = self.stack.pop() {
-            return val;
-        } else {
-            panic!("encountered drop but there's no value on top of stack")
+    fn pop(&self) -> Option<Val> {
+        match self.stack.pop() {
+            Some(StackEntry::Val(val)) => Some(val),
+            Some(other) => {self.stack.push(other); None}
+            _ => None
         }
     }
-
-    fn push_value(&self, val: Val) {
+    /**
+     * return true.
+     */
+    fn push(&self, val: Val) -> bool {
         self.stack.push(StackEntry::Val(val));
+        true
     }
 }
 
@@ -93,46 +107,54 @@ pub fn f64_to_slice(src: f64, dst: &mut [u8]) {
 }
 
 
-// TODO: return a boolean to indicate succeed/trap
-// so that the caller have a chance to report the trap instead of
-// simply panic'd
-pub fn step(rt: &mut Runtime) {
+/**
+ * Execute one instruction, by mutating states in `rt`.
+ * A step results in two cases: succeed, or trap, marked True and False,
+ * repectively. It is up to the caller to decide whether an external invocation
+ * has ended or not.
+ * 
+ * Never panics, as long as validation passes.
+ * 
+ * TODO: separate Trap and (impossible) validation error.
+ */
+pub fn step(rt: &mut Runtime) -> bool {
     let instr: Instr = rt.insts[rt.pc];
     rt.pc+=1;
     match instr {
-        Instr::I32Const(val) => rt.push_value(Val::I32 { i: val }),
-        Instr::F32Const(val) => rt.push_value(Val::F32 { f: val }),
-        Instr::I64Const(val) => rt.push_value(Val::I64 { i: val }),
-        Instr::F64Const(val) => rt.push_value(Val::F64 { f: val }),
+        Instr::I32Const(val) => rt.push(Val::I32 { i: val }),
+        Instr::F32Const(val) => rt.push(Val::F32 { f: val }),
+        Instr::I64Const(val) => rt.push(Val::I64 { i: val }),
+        Instr::F64Const(val) => rt.push(Val::F64 { f: val }),
         Instr::Drop => {
-            rt.pop_value_or_panic();
+            rt.pop() != None
         }
         Instr::Select => {
-            let cond = rt.pop_value_or_panic();
-            let val2 = rt.pop_value_or_panic();
-            let val1 = rt.pop_value_or_panic();
-            if let Val::I32 { i: val } = cond {
-                if val == 0 {
-                    rt.push_value(val2);
-                } else {
-                    rt.push_value(val1);
-                }
+            let cond = rt.pop();
+            let val2 = rt.pop();
+            let val1 = rt.pop();
+            match (cond, val2, val1) {
+                (Some(Val::I32 { i: cond }), Some(val2), Some(val1)) => 
+                    rt.push(if cond == 0 { val2 } else {val1}),
+                _ => false
             }
         }
         Instr::LocalGet(idx) => {
-            let locals = rt.current_frame_locals().unwrap();
-            rt.push_value(locals[idx]);
+            let locals = rt.current_frame().locals;
+            rt.push(locals[idx])
         }
         Instr::LocalSet(idx) => {
-            let locals = rt.current_frame_locals().unwrap();
-            let val = rt.pop_value_or_panic();
-            locals[idx] = val;
+            let locals = rt.current_frame().locals;
+            match rt.pop() {
+                Some(val) => {locals[idx] = val; true}
+                None => false
+            }
         }
         Instr::LocalTee(idx) => {
-            let locals = rt.current_frame_locals().unwrap();
-            let val = rt.pop_value_or_panic();
-            rt.push_value(val);
-            locals[idx] = val;
+             let locals = rt.current_frame().locals;
+            match rt.pop() {
+                Some(val) => {locals[idx] = val; rt.push(val)}
+                None => false
+            }
         }
         /*
          * we should have an indirection of 
@@ -141,70 +163,97 @@ pub fn step(rt: &mut Runtime) {
          * Eliminate that. 
          */
         Instr::GlobalGet(idx) => {
-            rt.push_value(rt.globals[idx].val);
+            rt.push(rt.globals[idx].val)
         }
         Instr::GlobalSet(idx) => {
             let global = rt.globals[idx];
-            if let Mut::Var = global.mut_ {
-                panic!("global {} cannot be written", idx);
-            }
-            global.val = rt.pop_value_or_panic();
+            // Validation ensures that the global is, in fact, marked as mutable.
+            // https://webassembly.github.io/spec/core/bikeshed/index.html#-hrefsyntax-instr-variablemathsfglobalsetx%E2%91%A0
+            global.val = rt.pop().unwrap();
+            true
         }
         /*
          * For memory instructions, we always use the one
          * and only memory
          */
         Instr::I32Load(memarg) => {
-            if let Val::I32 {i:base} = rt.pop_value_or_panic() {
-                let eff = (base + memarg.offset) as usize;
-                let val = slice_to_u32(&rt.mem[eff..eff+4]);
-                rt.push_value(Val::I32 {i:val});
-            } else {
-                panic!("top of stack is not value of i32");
+            match rt.pop() {
+                Some(Val::I32 {i:base}) => {
+                    let eff = (base + memarg.offset) as usize;
+                    let val = slice_to_u32(&rt.mem[eff..eff+4]);
+                    rt.push(Val::I32 {i:val})
+                }
+                _ => false
             }
         }
         Instr::I32Store(memarg) => {
-            if let Val::I32 {i:base} = rt.pop_value_or_panic() {
-                if let Val::I32{i:val} = rt.pop_value_or_panic() {
+            let base = rt.pop();
+            let val = rt.pop();
+            match (base, val) {
+                (Some(Val::I32 {i:base}), Some(Val::I32{i:val})) => {
                     let eff = (base + memarg.offset) as usize;
                     u32_to_slice(val, &mut rt.mem[eff..eff+4]);
+                    true
                 }
-            } 
-            panic!("top of stack is not value of i32");
+                _ => false
+            }
         }
-        Instr::Nop => {}
-        Instr::Unreachable => {panic!("unreachable")}
+        Instr::Nop => true,
+        Instr::Unreachable => false,
         Instr::Label(label) => {
             rt.stack.push(StackEntry::Label(label));
-        },
+            true
+        }
         Instr::IfElse {not_taken, label} => {
-            if let Val::I32 {i:cond} = rt.pop_value_or_panic() {
+            if let Some(Val::I32 {i:cond}) = rt.pop() {
                 if cond != 0 {
                     // rt.pc simply increments
                 } else {
                     rt.pc = not_taken;
                 }
-               rt.stack.push(StackEntry::Label(label)); 
+               rt.stack.push(StackEntry::Label(label));
+               true
             } else {
-                panic!("stack top value type mismatch, expected i32");
+               false
             }
         },
         Instr::End => {
-            // finds last Label, pops it and jumps to its continuation
-            let pos = rt.stack.iter().rposition(|&entry| {
-                if let StackEntry::Label(_) = entry {
-                    return true;
-                } else {
-                    return false;
+            // an End may exit the last block or the last frame (invocation).
+
+            // w.r.t. Validation, there are always Frame in the bottom
+            let pos = rt.stack.iter()
+                        .rposition(|&entry| !entry.is_val())
+                        .unwrap();
+            
+                match rt.stack[pos] {
+                    // In the frame case, keep the top #arity values, and 
+                    // pop all other values & labels above the frame.
+                    // https://webassembly.github.io/spec/core/bikeshed/index.html#returning-from-a-function%E2%91%A0
+                    StackEntry::Frame(frame) => {
+                        match frame.arity {
+                            0 => {
+                                rt.stack.truncate(pos);
+                                true
+                            }
+                            1 => {
+                                let ret = rt.stack.pop().unwrap();
+                                rt.stack.truncate(pos);
+                                rt.stack.push(ret);
+                                true
+                            }
+                            _ => false
+                        }
+                    },
+                    // In the label case, keep all values above the label, and jump
+                    // to its continuation.
+                    // https://webassembly.github.io/spec/core/bikeshed/index.html#exiting--hrefsyntax-instrmathitinstrast-with-label--l
+                    StackEntry::Label(label) => {
+                        rt.stack.remove(pos);
+                        rt.pc = label.continuation;
+                        true
+                    },
+                    _ => false // not possible
                 }
-            }).unwrap();
-            if let StackEntry::Label(label) = rt.stack[pos] {
-                rt.stack.remove(pos);
-                rt.pc = label.continuation;
-            } else {
-                panic!("impossible, why isn't there a enum variant \
-                comparing solution?");
-            }
         },
         Instr::Br(idx) => {
             //TODO

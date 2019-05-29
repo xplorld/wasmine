@@ -165,10 +165,17 @@ pub struct BrTableArgs {
 }
 
 #[derive(Debug)]
-#[derive(PartialEq)]
 pub struct Label {
     pub arity: u32, // 0 or 1
     pub continuation: Idx,
+}
+
+#[derive(Debug)]
+pub struct Frame {
+    pub arity: u32, // 0 or 1
+    pub locals: Vec<Val>,
+    // module, but as long as we do not support cross module invocations,
+    // we do not have to keep the ref.
 }
 
 #[derive(Debug)]
