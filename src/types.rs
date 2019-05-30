@@ -1,8 +1,8 @@
 /**
- Types defined in WASM.
- https://webassembly.github.io/spec/core/syntax/values.html
+Types defined in WASM.
+https://webassembly.github.io/spec/core/syntax/values.html
 
- */
+*/
 
 pub type Idx = usize;
 pub type Byte = u8;
@@ -30,14 +30,12 @@ pub enum ValType {
 
 // TODO: Val should have a handwritten PartialEq
 // to compare the content of the same variant
-#[derive(Debug)]
-#[derive(Clone)]
-#[derive(Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Val {
-    I32 { i: u32 },
-    F32 { f: f32 },
-    I64 { i: u64 },
-    F64 { f: f64 },
+    I32(u32),
+    F32(f32),
+    I64(u64),
+    F64(f64),
 }
 
 #[derive(Debug)]
@@ -165,19 +163,17 @@ pub struct BrTableArgs {
     label: Idx,
 }
 
-#[derive(Debug)]
-#[derive(Clone)]
-#[derive(Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Label {
     pub arity: usize, // 0 or 1
     pub continuation: Idx,
 }
 
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Frame {
     pub arity: usize, // 0 or 1
     pub locals: Vec<Val>,
+    pub next_pc: usize,
     // module, but as long as we do not support cross module invocations,
     // we do not have to keep the ref.
 }
@@ -208,7 +204,7 @@ pub enum Instr {
     Unreachable,
     // Block, Loop are reduced to Label
     Label(Label),
-    IfElse {not_taken: Idx, label: Label},
+    IfElse { not_taken: Idx, label: Label },
     End,
     Br(Idx),
     BrIf(Idx),
@@ -227,9 +223,7 @@ pub struct WasmineHostFunction {}
 pub enum FuncInst {
     Wasm {
         type_: FunctionType,
-        /* In runtime, we always have reference to the module
-        so we do not have to keep a reference here. */
-        // module: ModuleInst,
+
         code: Function,
     },
     Host {
@@ -237,7 +231,6 @@ pub enum FuncInst {
         hostcode: WasmineHostFunction,
     },
 }
-
 
 
 struct Store {
