@@ -8,8 +8,8 @@ pub type Idx = usize;
 pub type Byte = u8;
 
 pub struct Module {
-    types: Vec<FunctionType>,
-    funcs: Vec<Function>,
+    pub types: Vec<Type>,
+    pub funcs: Vec<Function>,
     tables: Vec<Table>, // only have one for now
     mems: Vec<Mem>,
     globals: Vec<Global>,
@@ -20,7 +20,7 @@ pub struct Module {
     exports: Vec<Export>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ValType {
     I32,
     I64,
@@ -33,18 +33,51 @@ pub enum ValType {
 #[derive(Debug, Clone, Copy)]
 pub enum Val {
     I32(u32),
-    F32(f32),
     I64(u64),
+    F32(f32),
     F64(f64),
 }
 
+impl Val {
+    pub fn matches(&self, type_: &ValType) -> bool {
+        match (self, type_) {
+            (Val::I32(_), ValType::I32)
+            | (Val::F32(_), ValType::F32)
+            | (Val::I64(_), ValType::I64)
+            | (Val::F64(_), ValType::F64) => true,
+            _ => false,
+        }
+    }
+
+}
+
+impl From<&ValType> for Val {
+    fn from(item: &ValType) -> Val {
+        match item {
+            ValType::I32 => Val::I32(0),
+            ValType::I64 => Val::I64(0),
+            ValType::F32 => Val::F32(0.0),
+            ValType::F64 => Val::F64(0.0),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct FunctionType {
+pub struct Type {
     // args could have 0 or more arguments
-    args: Vec<ValType>,
+    pub args: Vec<ValType>,
     // In the current version of WebAssembly, at most one value is allowed as a result. However, this may be generalized to sequences of values in future versions.
     // https://webassembly.github.io/spec/core/syntax/types.html#syntax-functype
-    ret: ValType,
+    pub ret: Option<ValType>,
+}
+
+impl Type {
+    pub fn arity(&self) -> usize {
+        match self.ret {
+            Some(_) => 1,
+            None => 0,
+        }
+    }
 }
 
 //TODO: do we need a enum of Function and FuncRef?
@@ -53,9 +86,15 @@ pub struct FuncRef {}
 
 #[derive(Debug)]
 pub struct Function {
-    type_: Idx,
-    locals: Vec<ValType>,
-    body: Expr,
+    pub type_: Type,
+    pub locals: Vec<ValType>,
+    pub body: Expr,
+}
+
+impl Function {
+    pub fn new_locals(&self) -> Vec<Val> {
+        self.locals.iter().map(Val::from).collect()
+    }
 }
 
 #[derive(Debug)]
@@ -141,14 +180,9 @@ pub enum ImportDesc {
     Global { g: GlobalType },
 }
 
-/**
- * In spec, expr ::= instr* end,
- * but end is a marker but not an instr, so we do not have
- * to represent it in struct Expr.
- */
 #[derive(Debug)]
 pub struct Expr {
-    instrs: Vec<Instr>,
+    pub instrs: Vec<Instr>,
 }
 
 #[derive(Debug)]
@@ -169,14 +203,6 @@ pub struct Label {
     pub continuation: Idx,
 }
 
-#[derive(Debug, Clone)]
-pub struct Frame {
-    pub arity: usize, // 0 or 1
-    pub locals: Vec<Val>,
-    pub next_pc: usize,
-    // module, but as long as we do not support cross module invocations,
-    // we do not have to keep the ref.
-}
 
 #[derive(Debug)]
 pub enum Instr {
@@ -222,12 +248,11 @@ pub struct WasmineHostFunction {}
 
 pub enum FuncInst {
     Wasm {
-        type_: FunctionType,
-
+        type_: Type,
         code: Function,
     },
     Host {
-        type_: FunctionType,
+        type_: Type,
         hostcode: WasmineHostFunction,
     },
 }
