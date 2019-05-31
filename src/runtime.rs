@@ -25,6 +25,21 @@ impl StackEntry {
     }
 }
 
+#[derive(Debug)]
+struct MemInst {
+    data: Vec<u8>,
+    max: Option<usize>,
+}
+
+impl MemInst {
+    fn new(mem: &Mem) -> MemInst {
+        MemInst {
+            data: vec![0; mem.limits.min * PAGE_SIZE],
+            max: mem.limits.max,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 pub struct GlobalInst {
@@ -32,12 +47,18 @@ pub struct GlobalInst {
     val: Val,
 }
 
+impl GlobalInst {
+    fn new(global: &Global) -> GlobalInst {
+        GlobalInst {
+            mut_: global.type_.mut_,
+            val: global.init.const_val().unwrap(),
+        }
+    }
+}
 
-/**
- * A VM is an instance of WASM runtme.
- */
+#[derive(Debug)]
 pub struct Runtime {
-    mem: Vec<u8>,
+    mem: MemInst,
     globals: Vec<GlobalInst>,
 }
 
@@ -57,6 +78,7 @@ pub struct Frame<'a> {
  * Separate readonly insts from all states
  * so that we could borrow the inst and mutate runtime in the same tme.
  */
+#[derive(Debug)]
 pub struct Context<'a> {
     module: &'a Module,
     runtime: Runtime,
@@ -122,6 +144,7 @@ impl<'a> Frame<'a> {
 }
 
 
+#[derive(Debug)]
 pub enum InvocationResult {
     Trap,
     Finish(Option<Val>), //arity 0 or 1
@@ -133,6 +156,16 @@ enum StepResult {
 }
 
 impl<'a> Context<'a> {
+    fn new(module: &'a Module) -> Context<'a> {
+        Context {
+            module: module,
+            runtime: Runtime {
+                mem: MemInst::new(&module.mems),
+                globals: module.globals.iter().map(GlobalInst::new).collect(),
+            },
+        }
+    }
+
     fn new_frame(&self, func: &'a Function, args: &[Val]) -> Frame<'a> {
         let mut frame = Frame {
             pc: 0,
@@ -154,6 +187,7 @@ impl<'a> Context<'a> {
             match self.step(&mut frame) {
                 StepResult::Continue => {}
                 StepResult::Complete(result) => {
+                    print!("invoke, args {:?}, ret {:?}\n", &args, &result);
                     return result;
                 }
             }
@@ -168,6 +202,7 @@ impl<'a> Context<'a> {
      */
     fn step(&mut self, frame: &mut Frame) -> StepResult {
         let instr = &frame.insts[frame.pc];
+        println!("step, stack {:?}, instr {:?}", frame.stack, instr);
         frame.pc += 1;
         match instr {
             Instr::I32Const(val) => {
@@ -185,6 +220,43 @@ impl<'a> Context<'a> {
             Instr::F64Const(val) => {
                 frame.push(Val::F64(*val));
                 StepResult::Continue
+            }
+            Instr::I64Eq => {
+                let val2 = frame.pop();
+                let val1 = frame.pop();
+                match (val2, val1) {
+                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
+                        if val1 == val2 {
+                            frame.push(Val::I32(1));
+                        } else {
+                            frame.push(Val::I32(0));
+                        }
+                        StepResult::Continue
+                    }
+                    _ => StepResult::Complete(InvocationResult::Trap),
+                }
+            }
+            Instr::I64Sub => {
+                let val2 = frame.pop();
+                let val1 = frame.pop();
+                match (val2, val1) {
+                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
+                        frame.push(Val::I64(val1.wrapping_sub(val2)));
+                        StepResult::Continue
+                    }
+                    _ => StepResult::Complete(InvocationResult::Trap),
+                }
+            }
+            Instr::I64Mul => {
+                let val2 = frame.pop();
+                let val1 = frame.pop();
+                match (val2, val1) {
+                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
+                        frame.push(Val::I64(val1.wrapping_mul(val2)));
+                        StepResult::Continue
+                    }
+                    _ => StepResult::Complete(InvocationResult::Trap),
+                }
             }
             Instr::Drop => {
                 if frame.pop().is_some() {
@@ -261,7 +333,7 @@ impl<'a> Context<'a> {
             Instr::I32Load(memarg) => match frame.pop() {
                 Some(Val::I32(base)) => {
                     let eff = (base + memarg.offset) as usize;
-                    let val = slice_to_u32(&self.runtime.mem[eff..eff + 4]);
+                    let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
                     frame.push(Val::I32(val));
                     StepResult::Continue
                 }
@@ -273,7 +345,7 @@ impl<'a> Context<'a> {
                 match (base, val) {
                     (Some(Val::I32(base)), Some(Val::I32(val))) => {
                         let eff = (base + memarg.offset) as usize;
-                        u32_to_slice(val, &mut self.runtime.mem[eff..eff + 4]);
+                        u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
                         StepResult::Continue
                     }
                     _ => StepResult::Complete(InvocationResult::Trap),
@@ -285,7 +357,7 @@ impl<'a> Context<'a> {
                 frame.stack.push(StackEntry::Label(*label));
                 StepResult::Continue
             }
-            Instr::IfElse { not_taken, label } => {
+            Instr::If { not_taken, label } => {
                 if let Some(Val::I32(cond)) = frame.pop() {
                     if cond != 0 {
                         // self.runtime.pc simply increments
@@ -298,7 +370,7 @@ impl<'a> Context<'a> {
                     StepResult::Complete(InvocationResult::Trap)
                 }
             }
-            Instr::End => {
+            Instr::End | Instr::Else => {
                 // an End may exit the last block or the last frame (invocation).
 
                 // find first label. If there is no label, return the function.
@@ -335,10 +407,12 @@ impl<'a> Context<'a> {
                 let func = &self.module.funcs[*idx];
                 let arity = func.type_.arity();
                 let len = frame.stack.len();
-                let args: Vec<Val> = frame.stack[len - arity..len]
-                    .iter()
+                let args: Vec<Val> = frame
+                    .stack
+                    .drain(len - arity..len)
+                    .into_iter()
                     .filter_map(|entry| match entry {
-                        StackEntry::Val(val) => Some(*val),
+                        StackEntry::Val(val) => Some(val),
                         _ => None,
                     })
                     .collect();
@@ -350,6 +424,7 @@ impl<'a> Context<'a> {
 
                 match (self.invoke(func, &args[..]), &func.type_.ret) {
                     (InvocationResult::Finish(Some(val)), Some(ret_type)) => {
+                        print!("invoke, args {:?}, ret {:?}\n", &args, val);
                         if val.matches(ret_type) {
                             //succeeded, push ret value back to current stack
                             frame.push(val);
@@ -369,3 +444,81 @@ impl<'a> Context<'a> {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn invoke_factorial() {
+        // i64 -> i64
+        let type_ = Type {
+            args: vec![ValType::I64],
+            ret: Some(ValType::I64),
+        };
+        let module = Module {
+            types: vec![type_.clone()],
+            funcs: vec![Function {
+                type_: type_.clone(),
+                locals: vec![ValType::I64],
+                body: Expr {
+                    instrs: vec![
+                        Instr::LocalGet(0),
+                        Instr::I64Const(0),
+                        Instr::I64Eq,
+                        Instr::If {
+                            not_taken: 6,
+                            label: Label {
+                                arity: 0,
+                                continuation: 13,
+                            },
+                        },
+                        Instr::I64Const(1),
+                        Instr::Else,
+                        Instr::LocalGet(0),
+                        Instr::LocalGet(0),
+                        Instr::I64Const(1),
+                        Instr::I64Sub,
+                        Instr::Call(0),
+                        Instr::I64Mul,
+                        Instr::End,
+                        Instr::End,
+                    ],
+                },
+            }],
+            globals: vec![],
+            mems: Mem {
+                limits: Limits {
+                    min: 0,
+                    max: Some(0),
+                },
+            },
+        };
+
+        let mut ctx = Context::new(&module);
+
+        match ctx.invoke(&module.funcs[0], &[Val::I64(0)]) {
+            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 1),
+            _ => panic!("failed"),
+        }
+
+        match ctx.invoke(&module.funcs[0], &[Val::I64(1)]) {
+            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 1),
+            _ => panic!("failed"),
+        }
+
+        match ctx.invoke(&module.funcs[0], &[Val::I64(2)]) {
+            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 2),
+            _ => panic!("failed"),
+        }
+
+        match ctx.invoke(&module.funcs[0], &[Val::I64(3)]) {
+            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 6),
+            _ => panic!("failed"),
+        }
+
+        match ctx.invoke(&module.funcs[0], &[Val::I64(4)]) {
+            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 24),
+            _ => panic!("failed"),
+        }
+    }
+}

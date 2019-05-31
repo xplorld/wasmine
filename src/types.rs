@@ -7,20 +7,27 @@ https://webassembly.github.io/spec/core/syntax/values.html
 pub type Idx = usize;
 pub type Byte = u8;
 
+// 64 KB
+pub const PAGE_SIZE: usize = 65535;
+
+#[derive(Debug)]
 pub struct Module {
     pub types: Vec<Type>,
     pub funcs: Vec<Function>,
-    tables: Vec<Table>, // only have one for now
-    mems: Vec<Mem>,
-    globals: Vec<Global>,
-    elem: Vec<Elem>,
-    data: Vec<Data>,
-    start: Option<Start>,
-    imports: Vec<Import>,
-    exports: Vec<Export>,
+    // tables: Vec<Table>, // only have one for now
+    // have one and only one mem
+    // if there are none, we instead have a Mem with zero min and max
+    pub mems: Mem,
+    pub globals: Vec<Global>,
+    // elem: Vec<Elem>,
+    // data: Vec<Data>,
+    // start: Option<Start>,
+    // imports: Vec<Import>,
+    // exports: Vec<Export>,
 }
 
-#[derive(Debug, PartialEq)]
+
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ValType {
     I32,
     I64,
@@ -62,7 +69,7 @@ impl From<&ValType> for Val {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Type {
     // args could have 0 or more arguments
     pub args: Vec<ValType>,
@@ -105,28 +112,28 @@ pub struct Table {
 
 #[derive(Debug)]
 pub struct Limits {
-    min: u32,
-    max: Option<u32>,
+    pub min: usize,
+    pub max: Option<usize>,
 }
 
 #[derive(Debug)]
 pub struct Mem {
-    limits: Limits,
+    pub limits: Limits,
 }
 
 #[derive(Debug)]
 pub struct Global {
-    type_: GlobalType,
-    init: Expr,
+    pub type_: GlobalType,
+    pub init: Expr,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct GlobalType {
-    mut_: Mut,
-    type_: ValType,
+    pub mut_: Mut,
+    pub type_: ValType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum Mut {
     Const,
     Var,
@@ -185,6 +192,28 @@ pub struct Expr {
     pub instrs: Vec<Instr>,
 }
 
+impl Expr {
+    /**
+     * If `self` is a constant, evaluate it and return the result.
+     * Else, return `None`.
+     *
+     * Currently only support returning one value.
+     */
+    pub fn const_val(&self) -> Option<Val> {
+        if self.instrs.len() == 1 {
+            match self.instrs.first() {
+                Some(Instr::I32Const(val)) => Some(Val::I32(*val)),
+                Some(Instr::F32Const(val)) => Some(Val::F32(*val)),
+                Some(Instr::I64Const(val)) => Some(Val::I64(*val)),
+                Some(Instr::F64Const(val)) => Some(Val::F64(*val)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Memarg {
     pub offset: u32,
@@ -211,6 +240,10 @@ pub enum Instr {
     F32Const(f32),
     I64Const(u64),
     F64Const(f64),
+    I64Eq,
+    I64Sub,
+    I64Mul,
+
     /* more numeric instrs */
     /* parametric instrs */
     Drop,
@@ -230,7 +263,8 @@ pub enum Instr {
     Unreachable,
     // Block, Loop are reduced to Label
     Label(Label),
-    IfElse { not_taken: Idx, label: Label },
+    If { not_taken: Idx, label: Label },
+    Else,
     End,
     Br(Idx),
     BrIf(Idx),
