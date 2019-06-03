@@ -5,7 +5,8 @@ https://webassembly.github.io/spec/core/syntax/values.html
 */
 
 use instrs::Instr;
-use runtime::Trap;
+pub use val::*;
+
 
 pub type Idx = usize;
 pub type Byte = u8;
@@ -29,72 +30,6 @@ pub struct Module {
     // exports: Vec<Export>,
 }
 
-
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum ValType {
-    I32,
-    I64,
-    F32,
-    F64,
-}
-
-// TODO: Val should have a handwritten PartialEq
-// to compare the content of the same variant
-#[derive(Debug, Clone, Copy)]
-pub enum Val {
-    I32(u32),
-    I64(u64),
-    F32(f32),
-    F64(f64),
-}
-
-impl Val {
-    pub fn matches(&self, type_: &ValType) -> bool {
-        match (self, type_) {
-            (Val::I32(_), ValType::I32)
-            | (Val::F32(_), ValType::F32)
-            | (Val::I64(_), ValType::I64)
-            | (Val::F64(_), ValType::F64) => true,
-            _ => false,
-        }
-    }
-
-    pub fn as_i32(&self) -> Result<u32, Trap> {
-        match self {
-            Val::I32(i) => Ok(*i),
-            _ => Err(Trap{}),
-        }
-    }
-        pub fn as_i64(&self) -> Result<u64, Trap> {
-        match self {
-            Val::I64(i) => Ok(*i),
-            _ => Err(Trap{}),
-        }
-    }
-        pub fn as_f32(&self) -> Result<f32, Trap> {
-        match self {
-            Val::F32(f) => Ok(*f),
-            _ => Err(Trap{}),
-        }
-    }
-        pub fn as_f64(&self) -> Result<f64, Trap> {
-        match self {
-            Val::F64(f) => Ok(*f),
-            _ => Err(Trap{}),
-        }
-    }
-}
-
-impl From<&ValType> for Val {
-    fn from(item: &ValType) -> Val {
-        match item {
-            ValType::I32 => Val::I32(0),
-            ValType::I64 => Val::I64(0),
-            ValType::F32 => Val::F32(0.0),
-            ValType::F64 => Val::F64(0.0),
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Type {

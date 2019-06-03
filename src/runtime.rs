@@ -1,9 +1,11 @@
 
 use instrs::*;
-use std::error;
+use std::convert::TryInto;
+use std::error::Error;
 use std::fmt;
 use types::*;
 use util::*;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Trap;
 
@@ -13,7 +15,7 @@ impl fmt::Display for Trap {
     }
 }
 
-impl error::Error for Trap {}
+impl Error for Trap {}
 
 fn assert_or_trap(cond: bool) -> Result<(), Trap> {
     if cond {
@@ -121,9 +123,6 @@ impl<'a> Frame<'a> {
             _ => Err(Trap {}),
         }
     }
-    /**
-     * return true.
-     */
     fn push(&mut self, val: Val) {
         self.stack.push(StackEntry::Val(val));
     }
@@ -159,6 +158,49 @@ impl<'a> Frame<'a> {
             // unwrap and wrap == assert
             Ok(Finish(Some(self.tee().unwrap())))
         }
+    }
+
+    /**
+     * Beacause of function name, I can't think of a macro solution for this
+     * boilerplate.
+     */
+
+    fn unop<F, T>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T) -> T,
+        T: RawVal,
+    {
+        let val: T = self.pop()?.try_into()?;
+        Ok(self.push(op(val).into()))
+    }
+
+    fn binop<F, T>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T, T) -> T,
+        T: RawVal,
+    {
+        let val2 = self.pop()?.try_into()?;
+        let val1 = self.pop()?.try_into()?;
+        Ok(self.push(op(val1, val2).into()))
+    }
+
+    fn testop<F, T>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T) -> bool,
+        T: RawVal,
+    {
+        let val1 = self.pop()?.try_into()?;
+        Ok(self.push((op(val1) as u32).into()))
+    }
+
+    fn relop<F, T>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T, T) -> bool,
+        T: RawVal,
+    {
+        let val2 = self.pop()?.try_into()?;
+        let val1 = self.pop()?.try_into()?;
+        Ok(self.push((op(val1, val2) as u32).into()))
     }
 }
 
@@ -227,48 +269,21 @@ impl<'a> Context<'a> {
         println!("step, stack {:?}, instr {:?}", frame.stack, instr);
         frame.pc += 1;
         match instr {
-            Instr::I32Const(val) => {
-                frame.push(Val::I32(*val));
-            }
-            Instr::F32Const(val) => {
-                frame.push(Val::F32(*val));
-            }
-            Instr::I64Const(val) => {
-                frame.push(Val::I64(*val));
-            }
-            Instr::F64Const(val) => {
-                frame.push(Val::F64(*val));
-            }
-            Instr::I32Clz => {
-                let val = frame.pop()?;
-                let ret = i32unop(&val, u32::leading_zeros)?;
-                frame.push(ret);
-            }
-
-            Instr::I64Sub => {
-                let val2 = frame.pop()?;
-                let val1 = frame.pop()?;
-                let ret = i64binop(&val1, &val2, u64::wrapping_sub)?;
-                frame.push(ret);
-            }
-            Instr::I64Mul => {
-                let val2 = frame.pop()?;
-                let val1 = frame.pop()?;
-                let ret = i64binop(&val1, &val2, u64::wrapping_mul)?;
-                frame.push(ret);
-            }
-            Instr::I64Eq => {
-                let val2 = frame.pop()?.as_i64()?;
-                let val1 = frame.pop()?.as_i64()?;
-                let ret = if val1 == val2 { 1 } else { 0 };
-
-                frame.push(Val::I32(ret));
-            }
+            // consts
+            Instr::I32Const(val) => frame.push((*val).into()),
+            Instr::F32Const(val) => frame.push((*val).into()),
+            Instr::I64Const(val) => frame.push((*val).into()),
+            Instr::F64Const(val) => frame.push((*val).into()),
+            //
+            Instr::I32Clz => frame.unop(u32::leading_zeros)?,
+            Instr::I64Sub => frame.binop(u64::wrapping_sub)?,
+            Instr::I64Mul => frame.binop(u64::wrapping_mul)?,
+            Instr::I64Eq => frame.relop(|val1: u64, val2: u64| val1 == val2)?,
             Instr::Drop => {
                 let _ = frame.pop()?;
             }
             Instr::Select => {
-                let cond = frame.pop()?.as_i32()?;
+                let cond: u32 = frame.pop()?.try_into()?;
                 let val2 = frame.pop()?;
                 let val1 = frame.pop()?;
                 let ret = if cond == 0 { val2 } else { val1 };
@@ -311,14 +326,14 @@ impl<'a> Context<'a> {
              * and only memory
              */
             Instr::I32Load(memarg) => {
-                let base = frame.pop()?.as_i32()?;
+                let base: u32 = frame.pop()?.try_into()?;
                 let eff = (base + memarg.offset) as usize;
                 let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
                 frame.push(Val::I32(val));
             }
             Instr::I32Store(memarg) => {
-                let base = frame.pop()?.as_i32()?;
-                let val = frame.pop()?.as_i32()?;
+                let base: u32 = frame.pop()?.try_into()?;
+                let val: u32 = frame.pop()?.try_into()?;
 
                 let eff = (base + memarg.offset) as usize;
                 u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
@@ -329,7 +344,7 @@ impl<'a> Context<'a> {
                 frame.stack.push(StackEntry::Label(*label));
             }
             Instr::If { not_taken, label } => {
-                let cond = frame.pop()?.as_i32()?;
+                let cond: u32 = frame.pop()?.try_into()?;
 
                 if cond != 0 {
                     // self.runtime.pc simply increments
@@ -357,7 +372,7 @@ impl<'a> Context<'a> {
                 return frame.br(*idx);
             }
             Instr::BrIf(idx) => {
-                let cond = frame.pop()?.as_i32()?;
+                let cond: u32 = frame.pop()?.try_into()?;
                 if cond != 0 {
                     return frame.br(*idx);
                 } else {
@@ -410,6 +425,20 @@ mod test {
 
     use super::*;
 
+    fn helper(ctx: &mut Context, arg: u64, expected: u64) {
+        let ret: u64 = ctx
+            .invoke(&ctx.module.funcs[0], &[arg.into()])
+            .ok()
+            .unwrap()
+            .unwrap()
+            .try_into()
+            .ok()
+            .unwrap();
+        // let ret: u64 = ret.try_into().ok().unwrap();
+
+        assert_eq!(ret, expected);
+    }
+
     #[test]
     fn invoke_factorial() -> Result<(), Trap> {
         // i64 -> i64
@@ -458,39 +487,11 @@ mod test {
 
         let mut ctx = Context::new(&module);
 
-        assert_eq!(
-            ctx.invoke(&module.funcs[0], &[Val::I64(0)])?
-                .unwrap()
-                .as_i64()?,
-            1,
-        );
-
-        assert_eq!(
-            ctx.invoke(&module.funcs[0], &[Val::I64(1)])?
-                .unwrap()
-                .as_i64()?,
-            1,
-        );
-
-        assert_eq!(
-            ctx.invoke(&module.funcs[0], &[Val::I64(2)])?
-                .unwrap()
-                .as_i64()?,
-            2,
-        );
-
-        assert_eq!(
-            ctx.invoke(&module.funcs[0], &[Val::I64(3)])?
-                .unwrap()
-                .as_i64()?,
-            6,
-        );
-        assert_eq!(
-            ctx.invoke(&module.funcs[0], &[Val::I64(4)])?
-                .unwrap()
-                .as_i64()?,
-            24,
-        );
+        // helper(&mut ctx, 0, 1);
+        // helper(&mut ctx, 1, 1);
+        helper(&mut ctx, 2, 2);
+        helper(&mut ctx, 3, 6);
+        helper(&mut ctx, 4, 24);
         Ok(())
     }
 }
