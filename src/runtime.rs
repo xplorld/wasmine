@@ -274,11 +274,113 @@ impl<'a> Context<'a> {
             Instr::F32Const(val) => frame.push((*val).into()),
             Instr::I64Const(val) => frame.push((*val).into()),
             Instr::F64Const(val) => frame.push((*val).into()),
-            //
+
+            //iunop
             Instr::I32Clz => frame.unop(u32::leading_zeros)?,
+            Instr::I64Clz => unimplemented!(),
+            Instr::I32Ctz => unimplemented!(),
+            Instr::I64Ctz => unimplemented!(),
+            Instr::I32Popcnt => unimplemented!(),
+            Instr::I64Popcnt => unimplemented!(),
+            //ibinop
+            Instr::I32Add => unimplemented!(),
+            Instr::I64Add => unimplemented!(),
+            Instr::I32Sub => unimplemented!(),
             Instr::I64Sub => frame.binop(u64::wrapping_sub)?,
+            Instr::I32Mul => unimplemented!(),
             Instr::I64Mul => frame.binop(u64::wrapping_mul)?,
+            Instr::I32Divu => unimplemented!(),
+            Instr::I64Divu => unimplemented!(),
+            Instr::I32Divs => unimplemented!(),
+            Instr::I64Divs => unimplemented!(),
+            Instr::I32Remu => unimplemented!(),
+            Instr::I64Remu => unimplemented!(),
+            Instr::I32Rems => unimplemented!(),
+            Instr::I64Rems => unimplemented!(),
+            Instr::I32And => unimplemented!(),
+            Instr::I64And => unimplemented!(),
+            Instr::I32Or => unimplemented!(),
+            Instr::I64Or => unimplemented!(),
+            Instr::I32Xor => unimplemented!(),
+            Instr::I64Xor => unimplemented!(),
+            Instr::I32Shl => unimplemented!(),
+            Instr::I64Shl => unimplemented!(),
+            Instr::I32Shru => unimplemented!(),
+            Instr::I64Shru => unimplemented!(),
+            Instr::I32Shrs => unimplemented!(),
+            Instr::I64Shrs => unimplemented!(),
+            Instr::I32Rotl => unimplemented!(),
+            Instr::I64Rotl => unimplemented!(),
+            Instr::I32Rotr => unimplemented!(),
+            Instr::I64Rotr => unimplemented!(),
+            //funop
+            Instr::F32Abs => unimplemented!(),
+            Instr::F64Abs => unimplemented!(),
+            Instr::F32Neg => unimplemented!(),
+            Instr::F64Neg => unimplemented!(),
+            Instr::F32Sqrt => unimplemented!(),
+            Instr::F64Sqrt => unimplemented!(),
+            Instr::F32Ceil => unimplemented!(),
+            Instr::F64Ceil => unimplemented!(),
+            Instr::F32Floor => unimplemented!(),
+            Instr::F64Floor => unimplemented!(),
+            Instr::F32Trunc => unimplemented!(),
+            Instr::F64Trunc => unimplemented!(),
+            Instr::F32Nearest => unimplemented!(),
+            Instr::F64Nearest => unimplemented!(),
+            //fbinop
+            Instr::F32Add => unimplemented!(),
+            Instr::F64Add => unimplemented!(),
+            Instr::F32Sub => unimplemented!(),
+            Instr::F64Sub => unimplemented!(),
+            Instr::F32Mul => unimplemented!(),
+            Instr::F64Mul => unimplemented!(),
+            Instr::F32Div => unimplemented!(),
+            Instr::F64Div => unimplemented!(),
+            Instr::F32Min => unimplemented!(),
+            Instr::F64Min => unimplemented!(),
+            Instr::F32Max => unimplemented!(),
+            Instr::F64Max => unimplemented!(),
+            Instr::F32Copysign => unimplemented!(),
+            Instr::F64Copysign => unimplemented!(),
+            //itestop
+            Instr::I32Eqz => unimplemented!(),
+            Instr::I64Eqz => unimplemented!(),
+            //irelop
+            Instr::I32Eq => unimplemented!(),
             Instr::I64Eq => frame.relop(|val1: u64, val2: u64| val1 == val2)?,
+            Instr::I32Ne => unimplemented!(),
+            Instr::I64Ne => unimplemented!(),
+            Instr::I32Ltu => unimplemented!(),
+            Instr::I64Ltu => unimplemented!(),
+            Instr::I32Lts => unimplemented!(),
+            Instr::I64Lts => unimplemented!(),
+            Instr::I32Gtu => unimplemented!(),
+            Instr::I64Gtu => unimplemented!(),
+            Instr::I32Gts => unimplemented!(),
+            Instr::I64Gts => unimplemented!(),
+            Instr::I32Leu => unimplemented!(),
+            Instr::I64Leu => unimplemented!(),
+            Instr::I32Les => unimplemented!(),
+            Instr::I64Les => unimplemented!(),
+            Instr::I32Geu => unimplemented!(),
+            Instr::I64Geu => unimplemented!(),
+            Instr::I32Ges => unimplemented!(),
+            Instr::I64Ges => unimplemented!(),
+            //frelop
+            Instr::F32Eq => unimplemented!(),
+            Instr::F64Eq => unimplemented!(),
+            Instr::F32Ne => unimplemented!(),
+            Instr::F64Ne => unimplemented!(),
+            Instr::F32Lt => unimplemented!(),
+            Instr::F64Lt => unimplemented!(),
+            Instr::F32Gt => unimplemented!(),
+            Instr::F64Gt => unimplemented!(),
+            Instr::F32Le => unimplemented!(),
+            Instr::F64Le => unimplemented!(),
+            Instr::F32Ge => unimplemented!(),
+            Instr::F64Ge => unimplemented!(),
+            /* Parametric Instructions */
             Instr::Drop => {
                 let _ = frame.pop()?;
             }
@@ -289,6 +391,8 @@ impl<'a> Context<'a> {
                 let ret = if cond == 0 { val2 } else { val1 };
                 frame.push(ret);
             }
+
+            /* Variable Instructions */
             Instr::LocalGet(idx) => {
                 let local = frame.locals[*idx];
                 frame.push(local);
@@ -434,8 +538,6 @@ mod test {
             .try_into()
             .ok()
             .unwrap();
-        // let ret: u64 = ret.try_into().ok().unwrap();
-
         assert_eq!(ret, expected);
     }
 
