@@ -1,5 +1,37 @@
+
+use instrs::*;
+use std::error;
+use std::fmt;
 use types::*;
 use util::*;
+#[derive(Debug, Clone, Copy)]
+pub struct Trap;
+
+impl fmt::Display for Trap {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "it traps!")
+    }
+}
+
+impl error::Error for Trap {}
+
+fn assert_or_trap(cond: bool) -> Result<(), Trap> {
+    if cond {
+        Ok(())
+    } else {
+        Err(Trap {})
+    }
+}
+
+pub type InvocationResult = Result<Option<Val>, Trap>;
+
+enum StepNormalResult {
+    Continue,
+    Finish(Option<Val>),
+}
+
+type StepResult = Result<StepNormalResult, Trap>;
+
 
 #[derive(Debug)]
 enum StackEntry {
@@ -74,33 +106,19 @@ pub struct Frame<'a> {
     locals: Vec<Val>,
 }
 
-/**
- * Separate readonly insts from all states
- * so that we could borrow the inst and mutate runtime in the same tme.
- */
-#[derive(Debug)]
-pub struct Context<'a> {
-    module: &'a Module,
-    runtime: Runtime,
-}
-
 impl<'a> Frame<'a> {
     //TODO: refine it
-    fn pop(&mut self) -> Option<Val> {
+    fn pop(&mut self) -> Result<Val, Trap> {
         match self.stack.pop() {
-            Some(StackEntry::Val(val)) => Some(val),
-            Some(other) => {
-                self.stack.push(other);
-                None
-            }
-            _ => None,
+            Some(StackEntry::Val(val)) => Ok(val),
+            _ => Err(Trap {}),
         }
     }
 
-    fn tee(&self) -> Option<Val> {
+    fn tee(&self) -> Result<Val, Trap> {
         match self.stack.last() {
-            Some(StackEntry::Val(val)) => Some(*val),
-            _ => None,
+            Some(StackEntry::Val(val)) => Ok(*val),
+            _ => Err(Trap {}),
         }
     }
     /**
@@ -123,37 +141,37 @@ impl<'a> Frame<'a> {
     }
 
     fn br(&mut self, idx: usize) -> StepResult {
-        if let Some((pos, &Label { arity, .. })) = self.nth_label(idx) {
-            let len = self.stack.len();
-            self.stack.drain(pos..len - arity);
-            StepResult::Continue
-        } else {
-            StepResult::Complete(InvocationResult::Trap)
-        }
+        use self::StepNormalResult::*;
+
+        let (pos, &Label { arity, .. }) = self.nth_label(idx).ok_or(Trap {})?;
+
+        let len = self.stack.len();
+        self.stack.drain(pos..len - arity);
+        Ok(Continue)
     }
 
     fn return_value(&self) -> StepResult {
+        use self::StepNormalResult::*;
         if self.arity == 0 {
-            StepResult::Complete(InvocationResult::Finish(None))
+            Ok(Finish(None))
         } else {
             assert!(self.arity == 1);
             // unwrap and wrap == assert
-            StepResult::Complete(InvocationResult::Finish(Some(self.tee().unwrap())))
+            Ok(Finish(Some(self.tee().unwrap())))
         }
     }
 }
 
-
+/**
+ * Separate readonly insts from all states
+ * so that we could borrow the inst and mutate runtime in the same tme.
+ */
 #[derive(Debug)]
-pub enum InvocationResult {
-    Trap,
-    Finish(Option<Val>), //arity 0 or 1
+pub struct Context<'a> {
+    module: &'a Module,
+    runtime: Runtime,
 }
 
-enum StepResult {
-    Continue,
-    Complete(InvocationResult),
-}
 
 impl<'a> Context<'a> {
     fn new(module: &'a Module) -> Context<'a> {
@@ -182,13 +200,16 @@ impl<'a> Context<'a> {
         frame
     }
     pub fn invoke(&mut self, func: &'a Function, args: &[Val]) -> InvocationResult {
+        use self::StepNormalResult::*;
         let mut frame = self.new_frame(func, args);
         loop {
             match self.step(&mut frame) {
-                StepResult::Continue => {}
-                StepResult::Complete(result) => {
-                    print!("invoke, args {:?}, ret {:?}\n", &args, &result);
-                    return result;
+                Ok(Continue) => {}
+                Ok(Finish(ret)) => {
+                    return Ok(ret);
+                }
+                Err(trap) => {
+                    return Err(trap);
                 }
             }
         }
@@ -201,110 +222,71 @@ impl<'a> Context<'a> {
      * Never panics, as long as validation passes.
      */
     fn step(&mut self, frame: &mut Frame) -> StepResult {
+        use self::StepNormalResult::*;
         let instr = &frame.insts[frame.pc];
         println!("step, stack {:?}, instr {:?}", frame.stack, instr);
         frame.pc += 1;
         match instr {
             Instr::I32Const(val) => {
                 frame.push(Val::I32(*val));
-                StepResult::Continue
             }
             Instr::F32Const(val) => {
                 frame.push(Val::F32(*val));
-                StepResult::Continue
             }
             Instr::I64Const(val) => {
                 frame.push(Val::I64(*val));
-                StepResult::Continue
             }
             Instr::F64Const(val) => {
                 frame.push(Val::F64(*val));
-                StepResult::Continue
             }
-            Instr::I64Eq => {
-                let val2 = frame.pop();
-                let val1 = frame.pop();
-                match (val2, val1) {
-                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
-                        if val1 == val2 {
-                            frame.push(Val::I32(1));
-                        } else {
-                            frame.push(Val::I32(0));
-                        }
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Complete(InvocationResult::Trap),
-                }
+            Instr::I32Clz => {
+                let val = frame.pop()?;
+                let ret = i32unop(&val, u32::leading_zeros)?;
+                frame.push(ret);
             }
+
             Instr::I64Sub => {
-                let val2 = frame.pop();
-                let val1 = frame.pop();
-                match (val2, val1) {
-                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
-                        frame.push(Val::I64(val1.wrapping_sub(val2)));
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Complete(InvocationResult::Trap),
-                }
+                let val2 = frame.pop()?;
+                let val1 = frame.pop()?;
+                let ret = i64binop(&val1, &val2, u64::wrapping_sub)?;
+                frame.push(ret);
             }
             Instr::I64Mul => {
-                let val2 = frame.pop();
-                let val1 = frame.pop();
-                match (val2, val1) {
-                    (Some(Val::I64(val2)), Some(Val::I64(val1))) => {
-                        frame.push(Val::I64(val1.wrapping_mul(val2)));
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Complete(InvocationResult::Trap),
-                }
+                let val2 = frame.pop()?;
+                let val1 = frame.pop()?;
+                let ret = i64binop(&val1, &val2, u64::wrapping_mul)?;
+                frame.push(ret);
+            }
+            Instr::I64Eq => {
+                let val2 = frame.pop()?.as_i64()?;
+                let val1 = frame.pop()?.as_i64()?;
+                let ret = if val1 == val2 { 1 } else { 0 };
+
+                frame.push(Val::I32(ret));
             }
             Instr::Drop => {
-                if frame.pop().is_some() {
-                    StepResult::Continue
-                } else {
-                    StepResult::Complete(InvocationResult::Trap)
-                }
+                let _ = frame.pop()?;
             }
             Instr::Select => {
-                let cond = frame.pop();
-                let val2 = frame.pop();
-                let val1 = frame.pop();
-                match (cond, val2, val1) {
-                    (Some(Val::I32(cond)), Some(val2), Some(val1)) => {
-                        frame.push(if cond == 0 { val2 } else { val1 });
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Complete(InvocationResult::Trap),
-                }
-
+                let cond = frame.pop()?.as_i32()?;
+                let val2 = frame.pop()?;
+                let val1 = frame.pop()?;
+                let ret = if cond == 0 { val2 } else { val1 };
+                frame.push(ret);
             }
             Instr::LocalGet(idx) => {
                 let local = frame.locals[*idx];
                 frame.push(local);
-                StepResult::Continue
             }
             Instr::LocalSet(idx) => {
-                let val = frame.pop();
-                match val {
-                    Some(val) => {
-                        //TODO: assert type matches
-                        // or shall we do that in validation?
-                        frame.locals[*idx] = val;
-                        StepResult::Continue
-                    }
-                    None => StepResult::Complete(InvocationResult::Trap),
-                }
-
+                let val = frame.pop()?;
+                //TODO: assert type matches
+                // or shall we do that in validation?
+                frame.locals[*idx] = val;
             }
             Instr::LocalTee(idx) => {
-                let val = frame.tee();
-                match val {
-                    Some(val) => {
-                        frame.locals[*idx] = val;
-                        StepResult::Continue
-                    }
-                    None => StepResult::Complete(InvocationResult::Trap),
-                }
+                let val = frame.tee()?;
+                frame.locals[*idx] = val;
             }
             /*
              * we should have an indirection of
@@ -316,7 +298,6 @@ impl<'a> Context<'a> {
                 // for what time will Non-lexical lifetimes goes sub-stmt?
                 let val = self.runtime.globals[*idx].val;
                 frame.push(val);
-                StepResult::Continue
             }
             Instr::GlobalSet(idx) => {
                 let val = frame.pop().unwrap();
@@ -324,51 +305,38 @@ impl<'a> Context<'a> {
                 // Validation ensures that the global is, in fact, marked as mutable.
                 // https://webassembly.github.io/spec/core/bikeshed/index.html#-hrefsyntax-instr-variablemathsfglobalsetx%E2%91%A0
                 global.val = val;
-                StepResult::Continue
             }
             /*
              * For memory instructions, we always use the one
              * and only memory
              */
-            Instr::I32Load(memarg) => match frame.pop() {
-                Some(Val::I32(base)) => {
-                    let eff = (base + memarg.offset) as usize;
-                    let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
-                    frame.push(Val::I32(val));
-                    StepResult::Continue
-                }
-                _ => StepResult::Complete(InvocationResult::Trap),
-            },
-            Instr::I32Store(memarg) => {
-                let base = frame.pop();
-                let val = frame.pop();
-                match (base, val) {
-                    (Some(Val::I32(base)), Some(Val::I32(val))) => {
-                        let eff = (base + memarg.offset) as usize;
-                        u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
-                        StepResult::Continue
-                    }
-                    _ => StepResult::Complete(InvocationResult::Trap),
-                }
+            Instr::I32Load(memarg) => {
+                let base = frame.pop()?.as_i32()?;
+                let eff = (base + memarg.offset) as usize;
+                let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
+                frame.push(Val::I32(val));
             }
-            Instr::Nop => StepResult::Continue,
-            Instr::Unreachable => StepResult::Complete(InvocationResult::Trap),
+            Instr::I32Store(memarg) => {
+                let base = frame.pop()?.as_i32()?;
+                let val = frame.pop()?.as_i32()?;
+
+                let eff = (base + memarg.offset) as usize;
+                u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
+            }
+            Instr::Nop => {}
+            Instr::Unreachable => return Err(Trap {}),
             Instr::Label(label) => {
                 frame.stack.push(StackEntry::Label(*label));
-                StepResult::Continue
             }
             Instr::If { not_taken, label } => {
-                if let Some(Val::I32(cond)) = frame.pop() {
-                    if cond != 0 {
-                        // self.runtime.pc simply increments
-                    } else {
-                        frame.pc = *not_taken;
-                    }
-                    frame.stack.push(StackEntry::Label(*label));
-                    StepResult::Continue
+                let cond = frame.pop()?.as_i32()?;
+
+                if cond != 0 {
+                    // self.runtime.pc simply increments
                 } else {
-                    StepResult::Complete(InvocationResult::Trap)
+                    frame.pc = *not_taken;
                 }
+                frame.stack.push(StackEntry::Label(*label));
             }
             Instr::End | Instr::Else => {
                 // an End may exit the last block or the last frame (invocation).
@@ -379,30 +347,27 @@ impl<'a> Context<'a> {
                 if let Some((pos, &Label { continuation, .. })) = frame.nth_label(0) {
                     frame.stack.remove(pos);
                     frame.pc = continuation;
-                    StepResult::Continue
+                // outside match:
+                // return Ok(Continue);
                 } else {
-                    frame.return_value()
+                    return frame.return_value();
                 }
             }
-            Instr::Br(idx) => frame.br(*idx),
+            Instr::Br(idx) => {
+                return frame.br(*idx);
+            }
             Instr::BrIf(idx) => {
-                let cond = frame.pop();
-                if let Some(Val::I32(cond)) = cond {
-                    if cond != 0 {
-                        frame.br(*idx)
-                    } else {
-                        /* definitely not a trap */
-                        /* do nothing either */
-                        StepResult::Continue
-                    }
+                let cond = frame.pop()?.as_i32()?;
+                if cond != 0 {
+                    return frame.br(*idx);
                 } else {
-                    /* Oh traps */
-                    StepResult::Complete(InvocationResult::Trap)
+                    /* definitely not a trap */
+                    /* do nothing either */
+                    /* continues */
                 }
-
             }
             Instr::BrTable(args) => unimplemented!(),
-            Instr::Return => frame.return_value(),
+            Instr::Return => return frame.return_value(),
             Instr::Call(idx) => {
                 let func = &self.module.funcs[*idx];
                 let arity = func.type_.arity();
@@ -416,40 +381,37 @@ impl<'a> Context<'a> {
                         _ => None,
                     })
                     .collect();
-
                 // unlikely (only on failure), so do not check beforehand.
-                if args.len() != arity {
-                    return StepResult::Complete(InvocationResult::Trap);
-                }
+                assert_or_trap(args.len() == arity)?;
 
+                // func.type_.ret could be None, so we save this match
                 match (self.invoke(func, &args[..]), &func.type_.ret) {
-                    (InvocationResult::Finish(Some(val)), Some(ret_type)) => {
+                    (Ok(Some(val)), Some(ret_type)) => {
                         print!("invoke, args {:?}, ret {:?}\n", &args, val);
-                        if val.matches(ret_type) {
-                            //succeeded, push ret value back to current stack
-                            frame.push(val);
-                            StepResult::Continue
-                        } else {
-                            StepResult::Complete(InvocationResult::Trap)
-                        }
+                        assert_or_trap(val.matches(ret_type))?;
+                        //succeeded, push ret value back to current stack
+                        frame.push(val);
                     }
                     // also succeeded, but returned nothing
-                    (InvocationResult::Finish(None), None) => StepResult::Continue,
-
-                    _ => StepResult::Complete(InvocationResult::Trap),
+                    (Ok(None), None) => {}
+                    _ => {
+                        return Err(Trap {});
+                    }
                 }
             }
             Instr::CallIndirect(idx) => unimplemented!(),
-        }
+        };
+        Ok(Continue)
     }
 }
 
 #[cfg(test)]
 mod test {
+
     use super::*;
 
     #[test]
-    fn invoke_factorial() {
+    fn invoke_factorial() -> Result<(), Trap> {
         // i64 -> i64
         let type_ = Type {
             args: vec![ValType::I64],
@@ -496,29 +458,39 @@ mod test {
 
         let mut ctx = Context::new(&module);
 
-        match ctx.invoke(&module.funcs[0], &[Val::I64(0)]) {
-            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 1),
-            _ => panic!("failed"),
-        }
+        assert_eq!(
+            ctx.invoke(&module.funcs[0], &[Val::I64(0)])?
+                .unwrap()
+                .as_i64()?,
+            1,
+        );
 
-        match ctx.invoke(&module.funcs[0], &[Val::I64(1)]) {
-            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 1),
-            _ => panic!("failed"),
-        }
+        assert_eq!(
+            ctx.invoke(&module.funcs[0], &[Val::I64(1)])?
+                .unwrap()
+                .as_i64()?,
+            1,
+        );
 
-        match ctx.invoke(&module.funcs[0], &[Val::I64(2)]) {
-            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 2),
-            _ => panic!("failed"),
-        }
+        assert_eq!(
+            ctx.invoke(&module.funcs[0], &[Val::I64(2)])?
+                .unwrap()
+                .as_i64()?,
+            2,
+        );
 
-        match ctx.invoke(&module.funcs[0], &[Val::I64(3)]) {
-            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 6),
-            _ => panic!("failed"),
-        }
-
-        match ctx.invoke(&module.funcs[0], &[Val::I64(4)]) {
-            InvocationResult::Finish(Some(Val::I64(ret))) => assert_eq!(ret, 24),
-            _ => panic!("failed"),
-        }
+        assert_eq!(
+            ctx.invoke(&module.funcs[0], &[Val::I64(3)])?
+                .unwrap()
+                .as_i64()?,
+            6,
+        );
+        assert_eq!(
+            ctx.invoke(&module.funcs[0], &[Val::I64(4)])?
+                .unwrap()
+                .as_i64()?,
+            24,
+        );
+        Ok(())
     }
 }

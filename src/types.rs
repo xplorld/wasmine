@@ -4,6 +4,9 @@ https://webassembly.github.io/spec/core/syntax/values.html
 
 */
 
+use instrs::Instr;
+use runtime::Trap;
+
 pub type Idx = usize;
 pub type Byte = u8;
 
@@ -56,6 +59,30 @@ impl Val {
         }
     }
 
+    pub fn as_i32(&self) -> Result<u32, Trap> {
+        match self {
+            Val::I32(i) => Ok(*i),
+            _ => Err(Trap{}),
+        }
+    }
+        pub fn as_i64(&self) -> Result<u64, Trap> {
+        match self {
+            Val::I64(i) => Ok(*i),
+            _ => Err(Trap{}),
+        }
+    }
+        pub fn as_f32(&self) -> Result<f32, Trap> {
+        match self {
+            Val::F32(f) => Ok(*f),
+            _ => Err(Trap{}),
+        }
+    }
+        pub fn as_f64(&self) -> Result<f64, Trap> {
+        match self {
+            Val::F64(f) => Ok(*f),
+            _ => Err(Trap{}),
+        }
+    }
 }
 
 impl From<&ValType> for Val {
@@ -232,47 +259,6 @@ pub struct Label {
     pub continuation: Idx,
 }
 
-
-#[derive(Debug)]
-pub enum Instr {
-    /* numeric instrs */
-    I32Const(u32),
-    F32Const(f32),
-    I64Const(u64),
-    F64Const(f64),
-    I64Eq,
-    I64Sub,
-    I64Mul,
-
-    /* more numeric instrs */
-    /* parametric instrs */
-    Drop,
-    Select,
-    /* variable instructions */
-    LocalGet(Idx),
-    LocalSet(Idx),
-    LocalTee(Idx),
-    GlobalGet(Idx),
-    GlobalSet(Idx),
-    /* memory instructions */
-    I32Load(Memarg),
-    I32Store(Memarg),
-    /* more mem instrs */
-    /* ctrl instrs */
-    Nop,
-    Unreachable,
-    // Block, Loop are reduced to Label
-    Label(Label),
-    If { not_taken: Idx, label: Label },
-    Else,
-    End,
-    Br(Idx),
-    BrIf(Idx),
-    BrTable(BrTableArgs),
-    Return,
-    Call(Idx),
-    CallIndirect(Idx),
-}
 
 /**
  * Runtime Structures
