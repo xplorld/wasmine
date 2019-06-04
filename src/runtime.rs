@@ -8,6 +8,15 @@ use types::*;
 use util::*;
 
 macro_rules! u2i {
+    // for relop.
+    // converts a function of `(&$i, &$i) -> $ret` into `(&$u, &$u) -> $ret`
+    ($f: ident, $u: ty, $i: ty, $ret: ty) => {
+        |u1: &$u, u2: &$u| <$i>::$f(&(*u1 as $i), &(*u2 as $i)) as $ret
+    };
+
+    // for binop_partial.
+    // converts a function of `($i, $i) -> Option<$i>` into
+    // `($u, $u) -> Option<$u>`
     ($f: ident, $u: ty, $i: ty) => {
         |u1: $u, u2: $u| {
             if let Some(uret) = <$i>::$f(u1 as $i, u2 as $i) {
@@ -197,12 +206,12 @@ impl<'a> Frame<'a> {
 
     fn relop<F, T>(&mut self, op: F) -> Result<(), Trap>
     where
-        F: Fn(T, T) -> bool,
+        F: Fn(&T, &T) -> bool,
         T: RawVal,
     {
         let val2 = self.pop()?.try_into()?;
         let val1 = self.pop()?.try_into()?;
-        Ok(self.push((op(val1, val2) as u32).into()))
+        Ok(self.push((op(&val1, &val2) as u32).into()))
     }
 }
 
@@ -346,21 +355,21 @@ impl<'a> Context<'a> {
             Instr::F32Copysign => unimplemented!(),
             Instr::F64Copysign => unimplemented!(),
             //itestop
-            Instr::I32Eqz => unimplemented!(),
-            Instr::I64Eqz => unimplemented!(),
+            Instr::I32Eqz => frame.testop(|i: u32| i == 0)?,
+            Instr::I64Eqz => frame.testop(|i: u64| i == 0)?,
             //irelop
-            Instr::I32Eq => unimplemented!(),
-            Instr::I64Eq => frame.relop(|val1: u64, val2: u64| val1 == val2)?,
-            Instr::I32Ne => unimplemented!(),
-            Instr::I64Ne => unimplemented!(),
-            Instr::I32Ltu => unimplemented!(),
-            Instr::I64Ltu => unimplemented!(),
-            Instr::I32Lts => unimplemented!(),
-            Instr::I64Lts => unimplemented!(),
-            Instr::I32Gtu => unimplemented!(),
-            Instr::I64Gtu => unimplemented!(),
-            Instr::I32Gts => unimplemented!(),
-            Instr::I64Gts => unimplemented!(),
+            Instr::I32Eq => frame.relop(u32::eq)?,
+            Instr::I64Eq => frame.relop(u64::eq)?,
+            Instr::I32Ne => frame.relop(u32::ne)?,
+            Instr::I64Ne => frame.relop(u64::ne)?,
+            Instr::I32Ltu => frame.relop(u32::lt)?,
+            Instr::I64Ltu => frame.relop(u64::lt)?,
+            Instr::I32Lts => frame.relop(u2i!(lt, u32, i32, bool))?,
+            Instr::I64Lts => frame.relop(u2i!(lt, u64, i64, bool))?,
+            Instr::I32Gtu => frame.relop(u32::gt)?,
+            Instr::I64Gtu => frame.relop(u64::gt)?,
+            Instr::I32Gts => frame.relop(u2i!(gt, u32, i32, bool))?,
+            Instr::I64Gts => frame.relop(u2i!(gt, u64, i64, bool))?,
             Instr::I32Leu => unimplemented!(),
             Instr::I64Leu => unimplemented!(),
             Instr::I32Les => unimplemented!(),
