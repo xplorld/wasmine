@@ -3,8 +3,22 @@ use instrs::*;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
+use std::ops::BitAnd;
 use types::*;
 use util::*;
+
+macro_rules! u2i {
+    ($f: ident, $u: ty, $i: ty) => {
+        |u1: $u, u2: $u| {
+            if let Some(uret) = <$i>::$f(u1 as $i, u2 as $i) {
+                Some(uret as $u)
+            } else {
+                None
+            }
+        }
+    };
+}
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct Trap;
@@ -39,24 +53,6 @@ type StepResult = Result<StepNormalResult, Trap>;
 enum StackEntry {
     Val(Val),
     Label(Label),
-}
-
-// I hate this block of boilerplate
-impl StackEntry {
-
-    fn is_val(&self) -> bool {
-        match self {
-            StackEntry::Val(_) => true,
-            _ => false,
-        }
-    }
-
-    fn is_label(&self) -> bool {
-        match self {
-            StackEntry::Label(_) => true,
-            _ => false,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -160,11 +156,6 @@ impl<'a> Frame<'a> {
         }
     }
 
-    /**
-     * Beacause of function name, I can't think of a macro solution for this
-     * boilerplate.
-     */
-
     fn unop<F, T>(&mut self, op: F) -> Result<(), Trap>
     where
         F: Fn(T) -> T,
@@ -183,6 +174,17 @@ impl<'a> Frame<'a> {
         let val1 = self.pop()?.try_into()?;
         Ok(self.push(op(val1, val2).into()))
     }
+
+    fn binop_partial<F, T>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T, T) -> Option<T>,
+        T: RawVal,
+    {
+        let val2 = self.pop()?.try_into()?;
+        let val1 = self.pop()?.try_into()?;
+        Ok(self.push(op(val1, val2).ok_or(Trap {})?.into()))
+    }
+
 
     fn testop<F, T>(&mut self, op: F) -> Result<(), Trap>
     where
@@ -277,28 +279,28 @@ impl<'a> Context<'a> {
 
             //iunop
             Instr::I32Clz => frame.unop(u32::leading_zeros)?,
-            Instr::I64Clz => unimplemented!(),
-            Instr::I32Ctz => unimplemented!(),
-            Instr::I64Ctz => unimplemented!(),
-            Instr::I32Popcnt => unimplemented!(),
-            Instr::I64Popcnt => unimplemented!(),
+            Instr::I64Clz => frame.unop(|i: u64| i.leading_zeros() as u64)?,
+            Instr::I32Ctz => frame.unop(u32::trailing_zeros)?,
+            Instr::I64Ctz => frame.unop(|i: u64| i.trailing_zeros() as u64)?,
+            Instr::I32Popcnt => frame.unop(u32::count_zeros)?,
+            Instr::I64Popcnt => frame.unop(|i: u64| i.count_zeros() as u64)?,
             //ibinop
-            Instr::I32Add => unimplemented!(),
-            Instr::I64Add => unimplemented!(),
-            Instr::I32Sub => unimplemented!(),
+            Instr::I32Add => frame.binop(u32::wrapping_add)?,
+            Instr::I64Add => frame.binop(u64::wrapping_add)?,
+            Instr::I32Sub => frame.binop(u32::wrapping_sub)?,
             Instr::I64Sub => frame.binop(u64::wrapping_sub)?,
-            Instr::I32Mul => unimplemented!(),
+            Instr::I32Mul => frame.binop(u32::wrapping_mul)?,
             Instr::I64Mul => frame.binop(u64::wrapping_mul)?,
-            Instr::I32Divu => unimplemented!(),
-            Instr::I64Divu => unimplemented!(),
-            Instr::I32Divs => unimplemented!(),
-            Instr::I64Divs => unimplemented!(),
-            Instr::I32Remu => unimplemented!(),
-            Instr::I64Remu => unimplemented!(),
-            Instr::I32Rems => unimplemented!(),
-            Instr::I64Rems => unimplemented!(),
-            Instr::I32And => unimplemented!(),
-            Instr::I64And => unimplemented!(),
+            Instr::I32Divu => frame.binop_partial(u32::checked_div)?,
+            Instr::I64Divu => frame.binop_partial(u64::checked_div)?,
+            Instr::I32Divs => frame.binop_partial(u2i!(checked_div, u32, i32))?,
+            Instr::I64Divs => frame.binop_partial(u2i!(checked_div, u64, i64))?,
+            Instr::I32Remu => frame.binop_partial(u32::checked_rem)?,
+            Instr::I64Remu => frame.binop_partial(u64::checked_rem)?,
+            Instr::I32Rems => frame.binop_partial(u2i!(checked_rem, u32, i32))?,
+            Instr::I64Rems => frame.binop_partial(u2i!(checked_rem, u64, i64))?,
+            Instr::I32And => frame.binop(u32::bitand)?,
+            Instr::I64And => frame.binop(u64::bitand)?,
             Instr::I32Or => unimplemented!(),
             Instr::I64Or => unimplemented!(),
             Instr::I32Xor => unimplemented!(),
