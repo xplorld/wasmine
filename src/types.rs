@@ -68,8 +68,8 @@ impl Function {
 
 #[derive(Debug)]
 pub struct Table {
-    limits: Limits,
-    elemtype: FuncRef,
+    pub limits: Limits,
+    pub elemtype: FuncRef,
 }
 
 #[derive(Debug)]
@@ -155,6 +155,17 @@ pub struct Expr {
 }
 
 impl Expr {
+    /**
+     * try to convert a vector of instrs into an Expr.
+     * The input instrs's Labels may have uninitialized continuations.
+     * If the instrs fails validation, return None,
+     * Else, return Some(expr) with continuations properly set up.
+     */
+    pub fn try_from(instrs: Vec<Instr>) -> Option<Expr> {
+        //TODO
+        None
+    }
+
     /**
      * If `self` is a constant, evaluate it and return the result.
      * Else, return `None`.

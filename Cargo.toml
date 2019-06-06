@@ -4,3 +4,4 @@ version = "0.1.0"
 authors = ["xplorld <xplorld@gmail.com>"]
 
 [dependencies]
+nom = "5.0.0-beta2"

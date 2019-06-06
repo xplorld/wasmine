@@ -1,7 +1,4 @@
 // Instructions, and their implementations.
-
-
-use runtime::Trap;
 use types::*;
 
 
@@ -158,4 +155,25 @@ pub enum Instr {
     Return,
     Call(Idx),
     CallIndirect(Idx),
+}
+
+pub enum ParseInstr {
+    Instr(Instr),
+    Block {
+        type_: Option<ValType>,
+        instrs: Vec<ParseInstr>,
+    },
+    Loop {
+        type_: Option<ValType>,
+        instrs: Vec<ParseInstr>,
+    },
+    If {
+        type_: Option<ValType>,
+        then: Vec<ParseInstr>,
+    },
+    IfElse {
+        type_: Option<ValType>,
+        then: Vec<ParseInstr>,
+        else_: Vec<ParseInstr>,
+    },
 }
