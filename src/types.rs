@@ -199,6 +199,13 @@ pub struct BrTableArgs {
     label: Idx,
 }
 
+
+#[derive(Debug)]
+pub enum BlockCont {
+    Finish,
+    Loop,
+}
+
 /**
  * A block of control flow.
  */
@@ -206,10 +213,11 @@ pub struct BrTableArgs {
 pub struct Block {
     pub type_: Option<ValType>, // 0 or 1
     pub instrs: Vec<Instr>,
+    pub continuation: BlockCont,
 }
 
 impl Block {
-    fn arity(&self) -> usize {
+    pub fn arity(&self) -> usize {
         match self.type_ {
             Some(_) => 1,
             None => 0,
