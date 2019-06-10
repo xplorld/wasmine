@@ -1,11 +1,13 @@
 #[macro_use]
 extern crate nom;
 
+#[macro_use]
+extern crate log;
+
 mod binformat;
 mod instrs;
-mod temp;
-mod util;
+mod nom_ext;
 mod runtime;
 mod types;
-mod nom_ext;
+mod util;
 mod val;

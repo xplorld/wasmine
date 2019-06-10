@@ -1,5 +1,5 @@
-
 use instrs::*;
+use log::debug;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
@@ -59,12 +59,6 @@ type StepResult = Result<StepNormalResult, Trap>;
 
 
 #[derive(Debug)]
-enum StackEntry {
-    Val(Val),
-    Label(Label),
-}
-
-#[derive(Debug)]
 struct MemInst {
     data: Vec<u8>,
     max: Option<usize>,
@@ -101,65 +95,65 @@ pub struct Runtime {
     globals: Vec<GlobalInst>,
 }
 
-/**
- * Local context of an invocation.
- */
 #[derive(Debug)]
-pub struct Frame<'a> {
+struct BlockFrame<'a> {
     pc: Idx,
-    insts: &'a Vec<Instr>,
-    stack: Vec<StackEntry>,
-    arity: usize, // 0 or 1
-    locals: Vec<Val>,
+    block: &'a Block,
 }
 
-impl<'a> Frame<'a> {
+#[derive(Debug)]
+struct ValStack {
+    stack: Vec<Val>,
+}
+
+impl ValStack {
     //TODO: refine it
     fn pop(&mut self) -> Result<Val, Trap> {
         match self.stack.pop() {
-            Some(StackEntry::Val(val)) => Ok(val),
+            Some(val) => Ok(val),
             _ => Err(Trap {}),
         }
     }
 
     fn tee(&self) -> Result<Val, Trap> {
         match self.stack.last() {
-            Some(StackEntry::Val(val)) => Ok(*val),
+            Some(val) => Ok(*val),
             _ => Err(Trap {}),
         }
     }
     fn push(&mut self, val: Val) {
-        self.stack.push(StackEntry::Val(val));
+        self.stack.push(val);
     }
-
-    fn nth_label(&self, n: usize) -> Option<(usize, &Label)> {
-        self.stack
-            .iter()
-            .enumerate()
-            .rev()
-            .filter_map(|(pos, entry)| match entry {
-                StackEntry::Label(label) => Some((pos, label)),
-                _ => None,
-            })
-            .nth(n)
-    }
-
+    /*
+        fn nth_label(&self, n: usize) -> Option<(usize, &Block)> {
+            self.stack
+                .iter()
+                .enumerate()
+                .rev()
+                .filter_map(|(pos, entry)| match entry {
+                    label => Some((pos, label)),
+                    _ => None,
+                })
+                .nth(n)
+        }
+    */
     fn br(&mut self, idx: usize) -> StepResult {
-        use self::StepNormalResult::*;
+        Err(Trap {})
+        // use self::StepNormalResult::*;
 
-        let (pos, &Label { arity, .. }) = self.nth_label(idx).ok_or(Trap {})?;
+        // let (pos, &Label { arity, .. }) = self.nth_label(idx).ok_or(Trap {})?;
 
-        let len = self.stack.len();
-        self.stack.drain(pos..len - arity);
-        Ok(Continue)
+        // let len = self.stack.len();
+        // self.stack.drain(pos..len - arity);
+        // Ok(Continue)
     }
 
-    fn return_value(&self) -> StepResult {
+    fn return_value(&self, arity: usize) -> StepResult {
         use self::StepNormalResult::*;
-        if self.arity == 0 {
+        if arity == 0 {
             Ok(Finish(None))
         } else {
-            assert!(self.arity == 1);
+            assert!(arity == 1);
             // unwrap and wrap == assert
             Ok(Finish(Some(self.tee().unwrap())))
         }
@@ -216,6 +210,22 @@ impl<'a> Frame<'a> {
 }
 
 /**
+ * Local context of an invocation.
+ *
+ * A frame corresponds with a function invocation,
+ * and consists of an arity and a set of locals.
+ *
+ *
+ */
+#[derive(Debug)]
+pub struct Frame<'a> {
+    callstack: Vec<BlockFrame<'a>>,
+    arity: usize, // 0 or 1
+    locals: Vec<Val>,
+}
+
+
+/**
  * Separate readonly insts from all states
  * so that we could borrow the inst and mutate runtime in the same tme.
  */
@@ -239,9 +249,10 @@ impl<'a> Context<'a> {
 
     fn new_frame(&self, func: &'a Function, args: &[Val]) -> Frame<'a> {
         let mut frame = Frame {
-            pc: 0,
-            insts: &func.body.instrs,
-            stack: Vec::new(),
+            callstack: vec![BlockFrame {
+                pc: 0,
+                block: &func.body,
+            }],
             arity: func.type_.arity(),
             locals: func.new_locals(), //all zero
         };
@@ -276,40 +287,42 @@ impl<'a> Context<'a> {
      */
     fn step(&mut self, frame: &mut Frame) -> StepResult {
         use self::StepNormalResult::*;
-        let instr = &frame.insts[frame.pc];
-        println!("step, stack {:?}, instr {:?}", frame.stack, instr);
-        frame.pc += 1;
+        let mut valstack = ValStack { stack: vec![] };
+        let mut blockframe = frame.callstack.last_mut().ok_or(Trap {})?;
+        let instr = &blockframe.block.instrs[blockframe.pc];
+        debug!("step, stack {:?}, instr {:?}", valstack, instr);
+        blockframe.pc += 1;
         match instr {
             // consts
-            Instr::I32Const(val) => frame.push((*val).into()),
-            Instr::F32Const(val) => frame.push((*val).into()),
-            Instr::I64Const(val) => frame.push((*val).into()),
-            Instr::F64Const(val) => frame.push((*val).into()),
+            Instr::I32Const(val) => valstack.push((*val).into()),
+            Instr::F32Const(val) => valstack.push((*val).into()),
+            Instr::I64Const(val) => valstack.push((*val).into()),
+            Instr::F64Const(val) => valstack.push((*val).into()),
 
             //iunop
-            Instr::I32Clz => frame.unop(u32::leading_zeros)?,
-            Instr::I64Clz => frame.unop(|i: u64| i.leading_zeros() as u64)?,
-            Instr::I32Ctz => frame.unop(u32::trailing_zeros)?,
-            Instr::I64Ctz => frame.unop(|i: u64| i.trailing_zeros() as u64)?,
-            Instr::I32Popcnt => frame.unop(u32::count_zeros)?,
-            Instr::I64Popcnt => frame.unop(|i: u64| i.count_zeros() as u64)?,
+            Instr::I32Clz => valstack.unop(u32::leading_zeros)?,
+            Instr::I64Clz => valstack.unop(|i: u64| i.leading_zeros() as u64)?,
+            Instr::I32Ctz => valstack.unop(u32::trailing_zeros)?,
+            Instr::I64Ctz => valstack.unop(|i: u64| i.trailing_zeros() as u64)?,
+            Instr::I32Popcnt => valstack.unop(u32::count_zeros)?,
+            Instr::I64Popcnt => valstack.unop(|i: u64| i.count_zeros() as u64)?,
             //ibinop
-            Instr::I32Add => frame.binop(u32::wrapping_add)?,
-            Instr::I64Add => frame.binop(u64::wrapping_add)?,
-            Instr::I32Sub => frame.binop(u32::wrapping_sub)?,
-            Instr::I64Sub => frame.binop(u64::wrapping_sub)?,
-            Instr::I32Mul => frame.binop(u32::wrapping_mul)?,
-            Instr::I64Mul => frame.binop(u64::wrapping_mul)?,
-            Instr::I32Divu => frame.binop_partial(u32::checked_div)?,
-            Instr::I64Divu => frame.binop_partial(u64::checked_div)?,
-            Instr::I32Divs => frame.binop_partial(u2i!(checked_div, u32, i32))?,
-            Instr::I64Divs => frame.binop_partial(u2i!(checked_div, u64, i64))?,
-            Instr::I32Remu => frame.binop_partial(u32::checked_rem)?,
-            Instr::I64Remu => frame.binop_partial(u64::checked_rem)?,
-            Instr::I32Rems => frame.binop_partial(u2i!(checked_rem, u32, i32))?,
-            Instr::I64Rems => frame.binop_partial(u2i!(checked_rem, u64, i64))?,
-            Instr::I32And => frame.binop(u32::bitand)?,
-            Instr::I64And => frame.binop(u64::bitand)?,
+            Instr::I32Add => valstack.binop(u32::wrapping_add)?,
+            Instr::I64Add => valstack.binop(u64::wrapping_add)?,
+            Instr::I32Sub => valstack.binop(u32::wrapping_sub)?,
+            Instr::I64Sub => valstack.binop(u64::wrapping_sub)?,
+            Instr::I32Mul => valstack.binop(u32::wrapping_mul)?,
+            Instr::I64Mul => valstack.binop(u64::wrapping_mul)?,
+            Instr::I32Divu => valstack.binop_partial(u32::checked_div)?,
+            Instr::I64Divu => valstack.binop_partial(u64::checked_div)?,
+            Instr::I32Divs => valstack.binop_partial(u2i!(checked_div, u32, i32))?,
+            Instr::I64Divs => valstack.binop_partial(u2i!(checked_div, u64, i64))?,
+            Instr::I32Remu => valstack.binop_partial(u32::checked_rem)?,
+            Instr::I64Remu => valstack.binop_partial(u64::checked_rem)?,
+            Instr::I32Rems => valstack.binop_partial(u2i!(checked_rem, u32, i32))?,
+            Instr::I64Rems => valstack.binop_partial(u2i!(checked_rem, u64, i64))?,
+            Instr::I32And => valstack.binop(u32::bitand)?,
+            Instr::I64And => valstack.binop(u64::bitand)?,
             Instr::I32Or => unimplemented!(),
             Instr::I64Or => unimplemented!(),
             Instr::I32Xor => unimplemented!(),
@@ -355,21 +368,21 @@ impl<'a> Context<'a> {
             Instr::F32Copysign => unimplemented!(),
             Instr::F64Copysign => unimplemented!(),
             //itestop
-            Instr::I32Eqz => frame.testop(|i: u32| i == 0)?,
-            Instr::I64Eqz => frame.testop(|i: u64| i == 0)?,
+            Instr::I32Eqz => valstack.testop(|i: u32| i == 0)?,
+            Instr::I64Eqz => valstack.testop(|i: u64| i == 0)?,
             //irelop
-            Instr::I32Eq => frame.relop(u32::eq)?,
-            Instr::I64Eq => frame.relop(u64::eq)?,
-            Instr::I32Ne => frame.relop(u32::ne)?,
-            Instr::I64Ne => frame.relop(u64::ne)?,
-            Instr::I32Ltu => frame.relop(u32::lt)?,
-            Instr::I64Ltu => frame.relop(u64::lt)?,
-            Instr::I32Lts => frame.relop(u2i!(lt, u32, i32, bool))?,
-            Instr::I64Lts => frame.relop(u2i!(lt, u64, i64, bool))?,
-            Instr::I32Gtu => frame.relop(u32::gt)?,
-            Instr::I64Gtu => frame.relop(u64::gt)?,
-            Instr::I32Gts => frame.relop(u2i!(gt, u32, i32, bool))?,
-            Instr::I64Gts => frame.relop(u2i!(gt, u64, i64, bool))?,
+            Instr::I32Eq => valstack.relop(u32::eq)?,
+            Instr::I64Eq => valstack.relop(u64::eq)?,
+            Instr::I32Ne => valstack.relop(u32::ne)?,
+            Instr::I64Ne => valstack.relop(u64::ne)?,
+            Instr::I32Ltu => valstack.relop(u32::lt)?,
+            Instr::I64Ltu => valstack.relop(u64::lt)?,
+            Instr::I32Lts => valstack.relop(u2i!(lt, u32, i32, bool))?,
+            Instr::I64Lts => valstack.relop(u2i!(lt, u64, i64, bool))?,
+            Instr::I32Gtu => valstack.relop(u32::gt)?,
+            Instr::I64Gtu => valstack.relop(u64::gt)?,
+            Instr::I32Gts => valstack.relop(u2i!(gt, u32, i32, bool))?,
+            Instr::I64Gts => valstack.relop(u2i!(gt, u64, i64, bool))?,
             Instr::I32Leu => unimplemented!(),
             Instr::I64Leu => unimplemented!(),
             Instr::I32Les => unimplemented!(),
@@ -393,29 +406,29 @@ impl<'a> Context<'a> {
             Instr::F64Ge => unimplemented!(),
             /* Parametric Instructions */
             Instr::Drop => {
-                let _ = frame.pop()?;
+                let _ = valstack.pop()?;
             }
             Instr::Select => {
-                let cond: u32 = frame.pop()?.try_into()?;
-                let val2 = frame.pop()?;
-                let val1 = frame.pop()?;
+                let cond: u32 = valstack.pop()?.try_into()?;
+                let val2 = valstack.pop()?;
+                let val1 = valstack.pop()?;
                 let ret = if cond == 0 { val2 } else { val1 };
-                frame.push(ret);
+                valstack.push(ret);
             }
 
             /* Variable Instructions */
             Instr::LocalGet(idx) => {
                 let local = frame.locals[*idx];
-                frame.push(local);
+                valstack.push(local);
             }
             Instr::LocalSet(idx) => {
-                let val = frame.pop()?;
+                let val = valstack.pop()?;
                 //TODO: assert type matches
                 // or shall we do that in validation?
                 frame.locals[*idx] = val;
             }
             Instr::LocalTee(idx) => {
-                let val = frame.tee()?;
+                let val = valstack.tee()?;
                 frame.locals[*idx] = val;
             }
             /*
@@ -427,10 +440,10 @@ impl<'a> Context<'a> {
             Instr::GlobalGet(idx) => {
                 // for what time will Non-lexical lifetimes goes sub-stmt?
                 let val = self.runtime.globals[*idx].val;
-                frame.push(val);
+                valstack.push(val);
             }
             Instr::GlobalSet(idx) => {
-                let val = frame.pop().unwrap();
+                let val = valstack.pop().unwrap();
                 let global = &mut self.runtime.globals[*idx];
                 // Validation ensures that the global is, in fact, marked as mutable.
                 // https://webassembly.github.io/spec/core/bikeshed/index.html#-hrefsyntax-instr-variablemathsfglobalsetx%E2%91%A0
@@ -441,32 +454,33 @@ impl<'a> Context<'a> {
              * and only memory
              */
             Instr::I32Load(memarg) => {
-                let base: u32 = frame.pop()?.try_into()?;
+                let base: u32 = valstack.pop()?.try_into()?;
                 let eff = (base + memarg.offset) as usize;
                 let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
-                frame.push(Val::I32(val));
+                valstack.push(Val::I32(val));
             }
             Instr::I32Store(memarg) => {
-                let base: u32 = frame.pop()?.try_into()?;
-                let val: u32 = frame.pop()?.try_into()?;
+                let base: u32 = valstack.pop()?.try_into()?;
+                let val: u32 = valstack.pop()?.try_into()?;
 
                 let eff = (base + memarg.offset) as usize;
                 u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
             }
             Instr::Nop => {}
             Instr::Unreachable => return Err(Trap {}),
+            /*
             Instr::Label(label) => {
-                frame.stack.push(StackEntry::Label(*label));
+                frame.stack.push(*label);
             }
             Instr::If { not_taken, label } => {
-                let cond: u32 = frame.pop()?.try_into()?;
+                let cond: u32 = valstack.pop()?.try_into()?;
 
                 if cond != 0 {
                     // self.runtime.pc simply increments
                 } else {
                     frame.pc = *not_taken;
                 }
-                frame.stack.push(StackEntry::Label(*label));
+                frame.stack.push(*label);
             }
             Instr::End | Instr::Else => {
                 // an End may exit the last block or the last frame (invocation).
@@ -483,11 +497,12 @@ impl<'a> Context<'a> {
                     return frame.return_value();
                 }
             }
+
             Instr::Br(idx) => {
                 return frame.br(*idx);
             }
             Instr::BrIf(idx) => {
-                let cond: u32 = frame.pop()?.try_into()?;
+                let cond: u32 = valstack.pop()?.try_into()?;
                 if cond != 0 {
                     return frame.br(*idx);
                 } else {
@@ -507,7 +522,7 @@ impl<'a> Context<'a> {
                     .drain(len - arity..len)
                     .into_iter()
                     .filter_map(|entry| match entry {
-                        StackEntry::Val(val) => Some(val),
+                        val => Some(val),
                         _ => None,
                     })
                     .collect();
@@ -520,7 +535,7 @@ impl<'a> Context<'a> {
                         print!("invoke, args {:?}, ret {:?}\n", &args, val);
                         assert_or_trap(val.matches(ret_type))?;
                         //succeeded, push ret value back to current stack
-                        frame.push(val);
+                        valstack.push(val);
                     }
                     // also succeeded, but returned nothing
                     (Ok(None), None) => {}
@@ -529,12 +544,15 @@ impl<'a> Context<'a> {
                     }
                 }
             }
+            */
             Instr::CallIndirect(idx) => unimplemented!(),
+            //TODO: remove this
+            _ => unimplemented!(),
         };
         Ok(Continue)
     }
 }
-
+/*
 #[cfg(test)]
 mod test {
 
@@ -608,3 +626,4 @@ mod test {
         Ok(())
     }
 }
+*/

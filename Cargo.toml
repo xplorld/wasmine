@@ -5,3 +5,4 @@ authors = ["xplorld <xplorld@gmail.com>"]
 
 [dependencies]
 nom = "5.0.0-beta2"
+log = "0.4.6"

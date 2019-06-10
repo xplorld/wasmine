@@ -57,7 +57,7 @@ pub struct FuncRef {}
 pub struct Function {
     pub type_: Type,
     pub locals: Vec<ValType>,
-    pub body: Expr,
+    pub body: Block,
 }
 
 impl Function {
@@ -199,12 +199,23 @@ pub struct BrTableArgs {
     label: Idx,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Label {
-    pub arity: usize, // 0 or 1
-    pub continuation: Idx,
+/**
+ * A block of control flow.
+ */
+#[derive(Debug)]
+pub struct Block {
+    pub type_: Option<ValType>, // 0 or 1
+    pub instrs: Vec<Instr>,
 }
 
+impl Block {
+    fn arity(&self) -> usize {
+        match self.type_ {
+            Some(_) => 1,
+            None => 0,
+        }
+    }
+}
 
 /**
  * Runtime Structures

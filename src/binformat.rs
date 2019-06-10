@@ -1,13 +1,11 @@
+use instrs::Instr;
 
-use instrs::{Instr, ParseInstr};
-
-use nom::bytes::complete::tag;
 use nom::error::ErrorKind;
 use nom::number::complete::{le_u32, le_u8};
-use types::*;
+
 use nom::{alt, count, map_opt, named, take, IResult};
 use std::str::from_utf8;
-
+use types::*;
 
 named!(le_usize<usize>, map!(le_u32, |l| l as usize));
 
@@ -104,34 +102,36 @@ named!(
 // usize::MAX (which is appearently illegal) and wait for an operation of
 // validation-and-assign, namely Expr::try_from.
 named!(
-    instr<ParseInstr>,
+    instr<Instr>,
     switch!(le_u8,
-        0x00 => value!(ParseInstr::Instr(Instr::Unreachable)) |
-        0x01 => value!(ParseInstr::Instr(Instr::Nop)) |
+        0x00 => value!(Instr::Unreachable) |
+        0x01 => value!(Instr::Nop) |
         0x02 => do_parse!(
             type_: blocktype >>
             instrs: call!(instrs_till, 0x0b) >>
-            (ParseInstr::Block {type_, instrs})
+            (Instr::Block (Block {type_, instrs}))
         ) |
         0x03 => do_parse!(
             type_: blocktype >>
             instrs: call!(instrs_till, 0x0b) >>
-            (ParseInstr::Loop {type_, instrs})
+            (Instr::Loop (Block {type_, instrs}))
         ) |
         0x04 => alt!(
             do_parse!(
                 type_: blocktype >>
                 then: call!(instrs_till, 0x05) >>
                 else_: call!(instrs_till, 0x0b) >>
-                (ParseInstr::IfElse{type_, then, else_})
+                (Instr::IfElse{
+                    then: Block{type_, instrs: then},
+                    else_: Block{type_, instrs: else_}})
             ) |
             do_parse!(
                 type_: blocktype >>
-                then: call!(instrs_till, 0x0b) >>
-                (ParseInstr::If {type_, then})
+                instrs: call!(instrs_till, 0x0b) >>
+                (Instr::If(Block {type_, instrs}))
             )
         ) |
-        0x0c => map!(le_usize, |idx| ParseInstr::Instr(Instr::Br(idx)))
+        0x0c => map!(le_usize, |idx| Instr::Br(idx))
     )
 );
 
@@ -140,9 +140,9 @@ named!(
  * take next byte to see.
  * If is End (0x0B), return the vec including content so far.
  * 0x0B is eaten but not included in the vec.
- * Else, parse as an ParseInstr.
+ * Else, parse as an Instr.
  */
 named_args!(
-    instrs_till(end: u8)<Vec<ParseInstr>>,
+    instrs_till(end: u8)<Vec<Instr>>,
     map!(many_till!(instr, call!(tag_byte, end)), |t| t.0)
 );

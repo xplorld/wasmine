@@ -144,36 +144,14 @@ pub enum Instr {
     /* ctrl instrs */
     Nop,
     Unreachable,
-    // Block, Loop are reduced to Label
-    Label(Label),
-    If { not_taken: Idx, label: Label },
-    Else,
-    End,
+    Block(Block),
+    Loop(Block),
+    If(Block),
+    IfElse { then: Block, else_: Block },
     Br(Idx),
     BrIf(Idx),
     BrTable(BrTableArgs),
     Return,
     Call(Idx),
     CallIndirect(Idx),
-}
-
-pub enum ParseInstr {
-    Instr(Instr),
-    Block {
-        type_: Option<ValType>,
-        instrs: Vec<ParseInstr>,
-    },
-    Loop {
-        type_: Option<ValType>,
-        instrs: Vec<ParseInstr>,
-    },
-    If {
-        type_: Option<ValType>,
-        then: Vec<ParseInstr>,
-    },
-    IfElse {
-        type_: Option<ValType>,
-        then: Vec<ParseInstr>,
-        else_: Vec<ParseInstr>,
-    },
 }
