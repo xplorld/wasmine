@@ -343,8 +343,13 @@ impl<'a> Context<'a> {
             }
             Instr::IfElse {then, else_} => {
                 let cond: u32 = stack.pop()?.try_into()?;
-                let block = if cond != 0 {then} else {else_};
-                frame.enter(block);
+                if cond != 0 {
+                    frame.enter(then);
+                } else {
+                    if let Some(else_) = else_ {
+                        frame.enter(else_);
+                    }
+                }
             }
             // consts
             Instr::I32Const(val) => stack.push((*val).into()),
@@ -571,7 +576,7 @@ impl<'a> Context<'a> {
         Ok(Continue)
     }
 }
-/*
+
 #[cfg(test)]
 mod test {
 
@@ -601,28 +606,34 @@ mod test {
             funcs: vec![Function {
                 type_: type_.clone(),
                 locals: vec![ValType::I64],
-                body: Expr {
+                body: Block {
+                    type_: Some(ValType::I64),
+                    continuation: BlockCont::Finish,
                     instrs: vec![
                         Instr::LocalGet(0),
                         Instr::I64Const(0),
                         Instr::I64Eq,
-                        Instr::If {
-                            not_taken: 6,
-                            label: Label {
-                                arity: 0,
-                                continuation: 13,
+                        Instr::IfElse {
+                            then: Block {
+                                type_: Some(ValType::I64),
+                                continuation: BlockCont::Finish,
+                                instrs: vec![
+                                    Instr::I64Const(1),
+                                ],
                             },
+                            else_: Some(Block {
+                                type_: Some(ValType::I64),
+                                continuation: BlockCont::Finish,
+                                instrs: vec![
+                                    Instr::LocalGet(0),
+                                    Instr::LocalGet(0),
+                                    Instr::I64Const(1),
+                                    Instr::I64Sub,
+                                    Instr::Call(0),
+                                    Instr::I64Mul,
+                                ]
+                            }),
                         },
-                        Instr::I64Const(1),
-                        Instr::Else,
-                        Instr::LocalGet(0),
-                        Instr::LocalGet(0),
-                        Instr::I64Const(1),
-                        Instr::I64Sub,
-                        Instr::Call(0),
-                        Instr::I64Mul,
-                        Instr::End,
-                        Instr::End,
                     ],
                 },
             }],
@@ -645,4 +656,3 @@ mod test {
         Ok(())
     }
 }
-*/

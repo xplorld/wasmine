@@ -145,7 +145,7 @@ pub enum Instr {
     Nop,
     Unreachable,
     Block(Block),
-    IfElse { then: Block, else_: Block },
+    IfElse { then: Block, else_: Option<Block> },
     Br(Idx),
     BrIf(Idx),
     BrTable(BrTableArgs),

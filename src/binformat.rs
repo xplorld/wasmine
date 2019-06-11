@@ -1,11 +1,12 @@
 use crate::instrs::Instr;
 
+use crate::types::*;
 use nom::error::ErrorKind;
 use nom::number::complete::{le_u32, le_u8};
+use nom::IResult;
 
-use nom::{alt, count, map_opt, named, take, IResult};
 use std::str::from_utf8;
-use crate::types::*;
+
 
 named!(le_usize<usize>, map!(le_u32, |l| l as usize));
 
@@ -114,7 +115,7 @@ named!(
         0x03 => do_parse!(
             type_: blocktype >>
             instrs: call!(instrs_till, 0x0b) >>
-            (Instr::Loop (Block {type_, instrs, continuation: BlockCont::Loop}))
+            (Instr::Block (Block {type_, instrs, continuation: BlockCont::Loop}))
         ) |
         0x04 => alt!(
             do_parse!(
@@ -123,12 +124,14 @@ named!(
                 else_: call!(instrs_till, 0x0b) >>
                 (Instr::IfElse{
                     then: Block{type_, instrs: then, continuation: BlockCont::Finish},
-                    else_: Block{type_, instrs: else_, continuation: BlockCont::Finish}})
+                    else_: Some(Block{type_, instrs: else_, continuation: BlockCont::Finish})})
             ) |
             do_parse!(
                 type_: blocktype >>
                 instrs: call!(instrs_till, 0x0b) >>
-                (Instr::If(Block {type_, instrs, continuation: BlockCont::Finish}))
+                (Instr::IfElse{
+                    then: Block {type_, instrs, continuation: BlockCont::Finish},
+                    else_: None})
             )
         ) |
         0x0c => map!(le_usize, |idx| Instr::Br(idx))
