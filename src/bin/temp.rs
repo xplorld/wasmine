@@ -1,8 +1,7 @@
-#[macro_use]
-extern crate log;
-
-use log::debug;
-
 fn main() {
-    debug!("hw");
+    let mut x = 5;
+
+    let y = &x;
+
+    let z = &mut x;
 }

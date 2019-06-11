@@ -1,6 +1,7 @@
 
-use runtime::Trap;
+use crate::runtime::Trap;
 use std::convert::TryFrom;
+
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ValType {
     I32,

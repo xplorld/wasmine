@@ -1,11 +1,11 @@
-use instrs::Instr;
+use crate::instrs::Instr;
 
 use nom::error::ErrorKind;
 use nom::number::complete::{le_u32, le_u8};
 
 use nom::{alt, count, map_opt, named, take, IResult};
 use std::str::from_utf8;
-use types::*;
+use crate::types::*;
 
 named!(le_usize<usize>, map!(le_u32, |l| l as usize));
 

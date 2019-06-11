@@ -1,5 +1,5 @@
 // Instructions, and their implementations.
-use types::*;
+use crate::types::*;
 
 
 /**

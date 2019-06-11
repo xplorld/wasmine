@@ -4,8 +4,8 @@ https://webassembly.github.io/spec/core/syntax/values.html
 
 */
 
-use instrs::Instr;
-pub use val::*;
+use crate::instrs::Instr;
+pub use crate::val::*;
 
 
 pub type Idx = usize;
