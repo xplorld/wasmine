@@ -121,6 +121,10 @@ struct ValStack {
 }
 
 impl ValStack {
+
+    fn len(&self) -> usize {
+        self.stack.len()
+    }
     //TODO: refine it
     fn pop(&mut self) -> Result<Val, Trap> {
         match self.stack.pop() {
@@ -137,18 +141,6 @@ impl ValStack {
     }
     fn push(&mut self, val: Val) {
         self.stack.push(val);
-    }
-
-
-    fn br(&mut self, idx: usize) -> StepResult {
-        Err(Trap {})
-        // use self::StepNormalResult::*;
-
-        // let (pos, &Label { arity, .. }) = self.nth_label(idx).ok_or(Trap {})?;
-
-        // let len = self.stack.len();
-        // self.stack.drain(pos..len - arity);
-        // Ok(Continue)
     }
 
     fn return_value(&self, arity: usize) -> StepResult {
@@ -228,6 +220,30 @@ pub struct Frame<'a> {
     locals: Vec<Val>,
 }
 
+impl <'a> Frame<'a> {
+    fn enter(&mut self, block: &'a Block) {
+        let label = Label {
+                    pc: 0,
+                    block,
+                    val_idx: self.valstack.len(),
+                };
+        self.labelstack.push(label);
+    }
+
+
+    fn br(&mut self, idx: usize) -> StepResult {
+        use self::StepNormalResult::*;
+
+        // as validated, cannot overflow
+        let next_to_target = self.labelstack.len() - idx;
+        let next_val_idx = self.labelstack[next_to_target].val_idx;
+        self.labelstack.truncate(next_to_target);
+        self.valstack.stack.truncate(next_val_idx);
+        // now len(label) == next_to_target, so that last label *is* target
+        Ok(Continue)
+    }
+}
+
 /**
  * Separate readonly insts from all states
  * so that we could borrow the inst and mutate runtime in the same tme.
@@ -293,20 +309,42 @@ impl<'a> Context<'a> {
     fn step(&mut self, frame: &mut Frame) -> StepResult {
 
         use self::StepNormalResult::*;
-        let label = frame.labelstack.last().unwrap();
-        let instr = &label.block.instrs[label.pc];
-        let stack = &mut frame.valstack;
 
+        //TODO: seems nasty. How to make it clean?
+        //e.g. some strange pattern matching?
+        if frame.labelstack.is_empty() {
+            // no more to execute
+            return frame.valstack.return_value(frame.arity);
+        }
+        let label = frame.labelstack.last_mut().unwrap();
+        let instr = label.block.instrs.get(label.pc);
+        if instr.is_none() {
+            // this block comes to an end (as everything)
+            // as spec, values are left untouched, but the label shall exit
+            // as an optimization, we implement loop here
+            match label.block.continuation {
+                BlockCont::Finish => {
+                    frame.labelstack.pop();
+                }
+                BlockCont::Loop => {
+                    label.pc = 0;
+                }
+            }
+            return Ok(Continue);
+        }
+        let instr = instr.unwrap();
+        let stack = &mut frame.valstack;
+        // anyway, we have an instr, and a stack now.
         debug!("step, stack {:?}, instr {:?}", stack, instr);
 
         match instr {
             Instr::Block(block) => {
-                let label = Label {
-                    pc: 0,
-                    block,
-                    val_idx: stack.stack.len(),
-                };
-                frame.labelstack.push(label);
+                frame.enter(block);
+            }
+            Instr::IfElse {then, else_} => {
+                let cond: u32 = stack.pop()?.try_into()?;
+                let block = if cond != 0 {then} else {else_};
+                frame.enter(block);
             }
             // consts
             Instr::I32Const(val) => stack.push((*val).into()),
@@ -485,35 +523,6 @@ impl<'a> Context<'a> {
             Instr::Nop => {}
             Instr::Unreachable => return Err(Trap {}),
 
-            /*
-            Instr::Label(label) => {
-                frame.stack.push(*label);
-            }
-            Instr::If { not_taken, label } => {
-                let cond: u32 = stack.pop()?.try_into()?;
-
-                if cond != 0 {
-                    // self.runtime.pc simply increments
-                } else {
-                    frame.pc = *not_taken;
-                }
-                frame.stack.push(*label);
-            }
-            Instr::End | Instr::Else => {
-                // an End may exit the last block or the last frame (invocation).
-
-                // find first label. If there is no label, return the function.
-                // for a label, simply removes it entry and jumps to the
-                // continuation.
-                if let Some((pos, &Label { continuation, .. })) = frame.nth_label(0) {
-                    frame.stack.remove(pos);
-                    frame.pc = continuation;
-                // outside match:
-                // return Ok(Continue);
-                } else {
-                    return frame.return_value();
-                }
-            }
 
             Instr::Br(idx) => {
                 return frame.br(*idx);
@@ -529,27 +538,19 @@ impl<'a> Context<'a> {
                 }
             }
             Instr::BrTable(args) => unimplemented!(),
-            Instr::Return => return frame.return_value(),
+            Instr::Return => return stack.return_value(frame.arity),
             Instr::Call(idx) => {
                 let func = &self.module.funcs[*idx];
                 let arity = func.type_.arity();
-                let len = frame.stack.len();
-                let args: Vec<Val> = frame
-                    .stack
-                    .drain(len - arity..len)
-                    .into_iter()
-                    .filter_map(|entry| match entry {
-                        val => Some(val),
-                        _ => None,
-                    })
+                let len = stack.len();
+                let args: Vec<Val> = stack.stack
+                    .drain(len - arity..) // last `arity` vals
                     .collect();
-                // unlikely (only on failure), so do not check beforehand.
-                assert_or_trap(args.len() == arity)?;
 
                 // func.type_.ret could be None, so we save this match
                 match (self.invoke(func, &args[..]), &func.type_.ret) {
                     (Ok(Some(val)), Some(ret_type)) => {
-                        print!("invoke, args {:?}, ret {:?}\n", &args, val);
+                        debug!("invoke, args {:?}, ret {:?}\n", &args, val);
                         assert_or_trap(val.matches(ret_type))?;
                         //succeeded, push ret value back to current stack
                         stack.push(val);
@@ -561,7 +562,7 @@ impl<'a> Context<'a> {
                     }
                 }
             }
-            */
+            
             Instr::CallIndirect(idx) => unimplemented!(),
             //TODO: remove this
             _ => unimplemented!(),

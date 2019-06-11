@@ -145,8 +145,6 @@ pub enum Instr {
     Nop,
     Unreachable,
     Block(Block),
-    Loop(Block),
-    If(Block),
     IfElse { then: Block, else_: Block },
     Br(Idx),
     BrIf(Idx),
