@@ -195,8 +195,8 @@ pub struct Memarg {
 
 #[derive(Debug)]
 pub struct BrTableArgs {
-    table: Vec<Idx>,
-    label: Idx,
+    pub table: Vec<Idx>,
+    pub label: Idx,
 }
 
 

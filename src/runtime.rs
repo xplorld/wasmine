@@ -1,33 +1,13 @@
+
 use crate::instrs::*;
 use crate::types::*;
-use crate::util::*;
+use crate::util::AsPrimitive;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fmt;
-use std::ops::BitAnd;
 
-
-macro_rules! u2i {
-    // for relop.
-    // converts a function of `(&$i, &$i) -> $ret` into `(&$u, &$u) -> $ret`
-    ($f: ident, $u: ty, $i: ty, $ret: ty) => {
-        |u1: &$u, u2: &$u| <$i>::$f(&(*u1 as $i), &(*u2 as $i)) as $ret
-    };
-
-    // for binop_partial.
-    // converts a function of `($i, $i) -> Option<$i>` into
-    // `($u, $u) -> Option<$u>`
-    ($f: ident, $u: ty, $i: ty) => {
-        |u1: $u, u2: $u| {
-            if let Some(uret) = <$i>::$f(u1 as $i, u2 as $i) {
-                Some(uret as $u)
-            } else {
-                None
-            }
-        }
-    };
-}
-
+use std::mem;
+use std::ops::{BitAnd, BitOr, BitXor, Shl, Shr};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Trap;
@@ -173,14 +153,15 @@ impl ValStack {
         Ok(self.push(op(val1, val2).into()))
     }
 
-    fn binop_partial<F, T>(&mut self, op: F) -> Result<(), Trap>
+    fn binop_partial<T, U, F>(&mut self, op: F) -> Result<(), Trap>
     where
-        F: Fn(T, T) -> Option<T>,
-        T: RawVal,
+        F: Fn(U, U) -> Option<U>,
+        T: RawVal + AsPrimitive<U>,
+        U: Copy + AsPrimitive<T>,
     {
-        let val2 = self.pop()?.try_into()?;
-        let val1 = self.pop()?.try_into()?;
-        Ok(self.push(op(val1, val2).ok_or(Trap {})?.into()))
+        let val2: T = self.pop()?.try_into()?;
+        let val1: T = self.pop()?.try_into()?;
+        Ok(self.push(op(val1.as_(), val2.as_()).ok_or(Trap {})?.as_().into()))
     }
 
 
@@ -193,14 +174,15 @@ impl ValStack {
         Ok(self.push((op(val1) as u32).into()))
     }
 
-    fn relop<F, T>(&mut self, op: F) -> Result<(), Trap>
+    fn relop<T, U, F>(&mut self, op: F) -> Result<(), Trap>
     where
-        F: Fn(&T, &T) -> bool,
-        T: RawVal,
+        F: Fn(&U, &U) -> bool,
+        T: RawVal + AsPrimitive<U>,
+        U: Copy,
     {
-        let val2 = self.pop()?.try_into()?;
-        let val1 = self.pop()?.try_into()?;
-        Ok(self.push((op(&val1, &val2) as u32).into()))
+        let val2: T = self.pop()?.try_into()?;
+        let val1: T = self.pop()?.try_into()?;
+        Ok(self.push((op(&val1.as_(), &val2.as_()) as u32).into()))
     }
 }
 
@@ -220,13 +202,13 @@ pub struct Frame<'a> {
     locals: Vec<Val>,
 }
 
-impl <'a> Frame<'a> {
+impl<'a> Frame<'a> {
     fn enter(&mut self, block: &'a Block) {
         let label = Label {
-                    pc: 0,
-                    block,
-                    val_idx: self.valstack.len(),
-                };
+            pc: 0,
+            block,
+            val_idx: self.valstack.len(),
+        };
         self.labelstack.push(label);
     }
 
@@ -242,6 +224,7 @@ impl <'a> Frame<'a> {
         // now len(label) == next_to_target, so that last label *is* target
         Ok(Continue)
     }
+
 }
 
 /**
@@ -256,6 +239,63 @@ pub struct Context<'a> {
 
 
 impl<'a> Context<'a> {
+    /**
+     *
+     * Load a value of type U from mem into stack as type T.
+     *
+     * where
+     *      either T=U or
+     *  T is unsigned integer +
+     *  U is integer +
+     *  sizeof(T) >= sizeof(U)
+     * So that we could cast U to T with sign-extend (via `as` operator)
+     *
+     * e.g. i32.load_8s, shall be load<u32, i8>
+     *
+     */
+    fn load<T, U>(&mut self, frame: &mut Frame, memarg: &Memarg) -> Result<(), Trap>
+    where
+        T: RawVal + Copy,
+        U: FromSlice + AsPrimitive<T>,
+    {
+        let base: u32 = frame.valstack.pop()?.try_into()?;
+        let eff: usize = (base + memarg.offset).try_into().unwrap();
+        let tail = eff + mem::size_of::<U>();
+        let data = &self.runtime.mem.data;
+        assert_or_trap(data.len() < tail)?;
+        let val: T = U::from_slice(&self.runtime.mem.data[eff..tail]).as_();
+        frame.valstack.push(val.into());
+        Ok(())
+    }
+
+    /**
+     * Read a val from the stack of type T,
+     * Wrap (modulo) it into unsigned type U,
+     * and store into the mem.
+     *
+     * where
+     *      either T=U or
+     *      T: unsigned int
+     *      U: unsigned int
+     *      sizeof(T) >= sizeof(U)
+     */
+    fn store<T, U>(&mut self, frame: &mut Frame, memarg: &Memarg) -> Result<(), Trap>
+    where
+        T: RawVal + AsPrimitive<U>,
+        U: Copy + ToSlice,
+    {
+        let base: u32 = frame.valstack.pop()?.try_into()?;
+        let val: T = frame.valstack.pop()?.try_into()?;
+        let val: U = val.as_();
+
+        let eff = (base + memarg.offset) as usize;
+        let tail = eff + mem::size_of::<U>();
+        let data = &mut self.runtime.mem.data;
+        assert_or_trap(data.len() >= tail)?;
+        U::to_slice(val, &mut data[eff..tail]);
+        Ok(())
+    }
+
     fn new(module: &'a Module) -> Context<'a> {
         Context {
             module: module,
@@ -336,134 +376,9 @@ impl<'a> Context<'a> {
         let stack = &mut frame.valstack;
         // anyway, we have an instr, and a stack now.
         debug!("step, stack {:?}, instr {:?}", stack, instr);
+        label.pc += 1;
 
         match instr {
-            Instr::Block(block) => {
-                frame.enter(block);
-            }
-            Instr::IfElse {then, else_} => {
-                let cond: u32 = stack.pop()?.try_into()?;
-                if cond != 0 {
-                    frame.enter(then);
-                } else {
-                    if let Some(else_) = else_ {
-                        frame.enter(else_);
-                    }
-                }
-            }
-            // consts
-            Instr::I32Const(val) => stack.push((*val).into()),
-
-            Instr::F32Const(val) => stack.push((*val).into()),
-            Instr::I64Const(val) => stack.push((*val).into()),
-            Instr::F64Const(val) => stack.push((*val).into()),
-
-            //iunop
-            Instr::I32Clz => stack.unop(u32::leading_zeros)?,
-            Instr::I64Clz => stack.unop(|i: u64| i.leading_zeros() as u64)?,
-            Instr::I32Ctz => stack.unop(u32::trailing_zeros)?,
-            Instr::I64Ctz => stack.unop(|i: u64| i.trailing_zeros() as u64)?,
-            Instr::I32Popcnt => stack.unop(u32::count_zeros)?,
-            Instr::I64Popcnt => stack.unop(|i: u64| i.count_zeros() as u64)?,
-            //ibinop
-            Instr::I32Add => stack.binop(u32::wrapping_add)?,
-            Instr::I64Add => stack.binop(u64::wrapping_add)?,
-            Instr::I32Sub => stack.binop(u32::wrapping_sub)?,
-            Instr::I64Sub => stack.binop(u64::wrapping_sub)?,
-            Instr::I32Mul => stack.binop(u32::wrapping_mul)?,
-            Instr::I64Mul => stack.binop(u64::wrapping_mul)?,
-            Instr::I32Divu => stack.binop_partial(u32::checked_div)?,
-            Instr::I64Divu => stack.binop_partial(u64::checked_div)?,
-            Instr::I32Divs => stack.binop_partial(u2i!(checked_div, u32, i32))?,
-            Instr::I64Divs => stack.binop_partial(u2i!(checked_div, u64, i64))?,
-            Instr::I32Remu => stack.binop_partial(u32::checked_rem)?,
-            Instr::I64Remu => stack.binop_partial(u64::checked_rem)?,
-            Instr::I32Rems => stack.binop_partial(u2i!(checked_rem, u32, i32))?,
-            Instr::I64Rems => stack.binop_partial(u2i!(checked_rem, u64, i64))?,
-            Instr::I32And => stack.binop(u32::bitand)?,
-            Instr::I64And => stack.binop(u64::bitand)?,
-            Instr::I32Or => unimplemented!(),
-            Instr::I64Or => unimplemented!(),
-            Instr::I32Xor => unimplemented!(),
-            Instr::I64Xor => unimplemented!(),
-            Instr::I32Shl => unimplemented!(),
-            Instr::I64Shl => unimplemented!(),
-            Instr::I32Shru => unimplemented!(),
-            Instr::I64Shru => unimplemented!(),
-            Instr::I32Shrs => unimplemented!(),
-            Instr::I64Shrs => unimplemented!(),
-            Instr::I32Rotl => unimplemented!(),
-            Instr::I64Rotl => unimplemented!(),
-            Instr::I32Rotr => unimplemented!(),
-            Instr::I64Rotr => unimplemented!(),
-            //funop
-            Instr::F32Abs => unimplemented!(),
-            Instr::F64Abs => unimplemented!(),
-            Instr::F32Neg => unimplemented!(),
-            Instr::F64Neg => unimplemented!(),
-            Instr::F32Sqrt => unimplemented!(),
-            Instr::F64Sqrt => unimplemented!(),
-            Instr::F32Ceil => unimplemented!(),
-            Instr::F64Ceil => unimplemented!(),
-            Instr::F32Floor => unimplemented!(),
-            Instr::F64Floor => unimplemented!(),
-            Instr::F32Trunc => unimplemented!(),
-            Instr::F64Trunc => unimplemented!(),
-            Instr::F32Nearest => unimplemented!(),
-            Instr::F64Nearest => unimplemented!(),
-            //fbinop
-            Instr::F32Add => unimplemented!(),
-            Instr::F64Add => unimplemented!(),
-            Instr::F32Sub => unimplemented!(),
-            Instr::F64Sub => unimplemented!(),
-            Instr::F32Mul => unimplemented!(),
-            Instr::F64Mul => unimplemented!(),
-            Instr::F32Div => unimplemented!(),
-            Instr::F64Div => unimplemented!(),
-            Instr::F32Min => unimplemented!(),
-            Instr::F64Min => unimplemented!(),
-            Instr::F32Max => unimplemented!(),
-            Instr::F64Max => unimplemented!(),
-            Instr::F32Copysign => unimplemented!(),
-            Instr::F64Copysign => unimplemented!(),
-            //itestop
-            Instr::I32Eqz => stack.testop(|i: u32| i == 0)?,
-            Instr::I64Eqz => stack.testop(|i: u64| i == 0)?,
-            //irelop
-            Instr::I32Eq => stack.relop(u32::eq)?,
-            Instr::I64Eq => stack.relop(u64::eq)?,
-            Instr::I32Ne => stack.relop(u32::ne)?,
-            Instr::I64Ne => stack.relop(u64::ne)?,
-            Instr::I32Ltu => stack.relop(u32::lt)?,
-            Instr::I64Ltu => stack.relop(u64::lt)?,
-            Instr::I32Lts => stack.relop(u2i!(lt, u32, i32, bool))?,
-            Instr::I64Lts => stack.relop(u2i!(lt, u64, i64, bool))?,
-            Instr::I32Gtu => stack.relop(u32::gt)?,
-            Instr::I64Gtu => stack.relop(u64::gt)?,
-            Instr::I32Gts => stack.relop(u2i!(gt, u32, i32, bool))?,
-            Instr::I64Gts => stack.relop(u2i!(gt, u64, i64, bool))?,
-            Instr::I32Leu => unimplemented!(),
-            Instr::I64Leu => unimplemented!(),
-            Instr::I32Les => unimplemented!(),
-            Instr::I64Les => unimplemented!(),
-            Instr::I32Geu => unimplemented!(),
-            Instr::I64Geu => unimplemented!(),
-            Instr::I32Ges => unimplemented!(),
-            Instr::I64Ges => unimplemented!(),
-            //frelop
-            Instr::F32Eq => unimplemented!(),
-            Instr::F64Eq => unimplemented!(),
-            Instr::F32Ne => unimplemented!(),
-            Instr::F64Ne => unimplemented!(),
-            Instr::F32Lt => unimplemented!(),
-            Instr::F64Lt => unimplemented!(),
-            Instr::F32Gt => unimplemented!(),
-            Instr::F64Gt => unimplemented!(),
-            Instr::F32Le => unimplemented!(),
-            Instr::F64Le => unimplemented!(),
-            Instr::F32Ge => unimplemented!(),
-            Instr::F64Ge => unimplemented!(),
-            /* Parametric Instructions */
             Instr::Drop => {
                 let _ = stack.pop()?;
             }
@@ -508,27 +423,22 @@ impl<'a> Context<'a> {
                 // https://webassembly.github.io/spec/core/bikeshed/index.html#-hrefsyntax-instr-variablemathsfglobalsetx%E2%91%A0
                 global.val = val;
             }
-            /*
-             * For memory instructions, we always use the one
-             * and only memory
-             */
-            Instr::I32Load(memarg) => {
-                let base: u32 = stack.pop()?.try_into()?;
-                let eff = (base + memarg.offset) as usize;
-                let val = slice_to_u32(&self.runtime.mem.data[eff..eff + 4]);
-                stack.push(Val::I32(val));
-            }
-            Instr::I32Store(memarg) => {
-                let base: u32 = stack.pop()?.try_into()?;
-                let val: u32 = stack.pop()?.try_into()?;
-
-                let eff = (base + memarg.offset) as usize;
-                u32_to_slice(val, &mut self.runtime.mem.data[eff..eff + 4]);
-            }
             Instr::Nop => {}
             Instr::Unreachable => return Err(Trap {}),
 
-
+            Instr::Block(block) => {
+                frame.enter(block);
+            }
+            Instr::IfElse { then, else_ } => {
+                let cond: u32 = stack.pop()?.try_into()?;
+                if cond != 0 {
+                    frame.enter(then);
+                } else {
+                    if let Some(else_) = else_ {
+                        frame.enter(else_);
+                    }
+                }
+            }
             Instr::Br(idx) => {
                 return frame.br(*idx);
             }
@@ -548,7 +458,8 @@ impl<'a> Context<'a> {
                 let func = &self.module.funcs[*idx];
                 let arity = func.type_.arity();
                 let len = stack.len();
-                let args: Vec<Val> = stack.stack
+                let args: Vec<Val> = stack
+                    .stack
                     .drain(len - arity..) // last `arity` vals
                     .collect();
 
@@ -567,11 +478,133 @@ impl<'a> Context<'a> {
                     }
                 }
             }
-            
+
             Instr::CallIndirect(idx) => unimplemented!(),
+            /* numerics */
+            Instr::I32Load(memarg) => self.load::<u32, u32>(frame, memarg)?,
+            Instr::I64Load(memarg) => self.load::<u64, u64>(frame, memarg)?,
+            Instr::F32Load(memarg) => self.load::<f32, f32>(frame, memarg)?,
+            Instr::F64Load(memarg) => self.load::<f64, f64>(frame, memarg)?,
+            Instr::I32Load8S(memarg) => self.load::<u32, i8>(frame, memarg)?,
+            Instr::I32Load8U(memarg) => self.load::<u32, u8>(frame, memarg)?,
+            Instr::I32Load16S(memarg) => self.load::<u32, i16>(frame, memarg)?,
+            Instr::I32Load16U(memarg) => self.load::<u32, u16>(frame, memarg)?,
+            Instr::I64Load8S(memarg) => self.load::<u64, i8>(frame, memarg)?,
+            Instr::I64Load8U(memarg) => self.load::<u64, u8>(frame, memarg)?,
+            Instr::I64Load16S(memarg) => self.load::<u64, i16>(frame, memarg)?,
+            Instr::I64Load16U(memarg) => self.load::<u64, u16>(frame, memarg)?,
+            Instr::I64Load32S(memarg) => self.load::<u64, i32>(frame, memarg)?,
+            Instr::I64Load32U(memarg) => self.load::<u64, u32>(frame, memarg)?,
+
+            Instr::I32Store(memarg) => self.store::<u32, u32>(frame, memarg)?,
+            Instr::I64Store(memarg) => self.store::<u64, u64>(frame, memarg)?,
+            Instr::F32Store(memarg) => self.store::<f32, f32>(frame, memarg)?,
+            Instr::F64Store(memarg) => self.store::<f64, f64>(frame, memarg)?,
+            Instr::I32Store8(memarg) => self.store::<u32, u8>(frame, memarg)?,
+            Instr::I32Store16(memarg) => self.store::<u32, u16>(frame, memarg)?,
+            Instr::I64Store8(memarg) => self.store::<u64, u8>(frame, memarg)?,
+            Instr::I64Store16(memarg) => self.store::<u64, u16>(frame, memarg)?,
+            Instr::I64Store32(memarg) => self.store::<u64, u32>(frame, memarg)?,
+
+            Instr::MemorySize => unimplemented!(),
+            Instr::MemoryGrow => unimplemented!(),
+            // consts
+            Instr::I32Const(val) => stack.push((*val).into()),
+            Instr::F32Const(val) => stack.push((*val).into()),
+            Instr::I64Const(val) => stack.push((*val).into()),
+            Instr::F64Const(val) => stack.push((*val).into()),
+
+            Instr::I32Eqz => stack.testop(|i: u32| i == 0)?,
+            Instr::I32Eq => stack.relop::<u32, _, _>(u32::eq)?,
+            Instr::I32Ne => stack.relop::<u32, _, _>(u32::ne)?,
+            Instr::I32LtS => stack.relop::<u32, _, _>(i32::lt)?,
+            Instr::I32LtU => stack.relop::<u32, _, _>(u32::lt)?,
+            Instr::I32GtS => stack.relop::<u32, _, _>(i32::gt)?,
+            Instr::I32GtU => stack.relop::<u32, _, _>(u32::gt)?,
+            Instr::I32LeS => stack.relop::<u32, _, _>(i32::le)?,
+            Instr::I32LeU => stack.relop::<u32, _, _>(u32::le)?,
+            Instr::I32GeS => stack.relop::<u32, _, _>(i32::ge)?,
+            Instr::I32GeU => stack.relop::<u32, _, _>(u32::ge)?,
+
+            Instr::I64Eqz => stack.testop(|i: u64| i == 0)?,
+            Instr::I64Eq => stack.relop::<u64, _, _>(u64::eq)?,
+            Instr::I64Ne => stack.relop::<u64, _, _>(u64::ne)?,
+            Instr::I64LtS => stack.relop::<u64, _, _>(i64::lt)?,
+            Instr::I64LtU => stack.relop::<u64, _, _>(u64::lt)?,
+            Instr::I64GtS => stack.relop::<u64, _, _>(i64::gt)?,
+            Instr::I64GtU => stack.relop::<u64, _, _>(u64::gt)?,
+            Instr::I64LeS => stack.relop::<u64, _, _>(i64::le)?,
+            Instr::I64LeU => stack.relop::<u64, _, _>(u64::le)?,
+            Instr::I64GeS => stack.relop::<u64, _, _>(i64::ge)?,
+            Instr::I64GeU => stack.relop::<u64, _, _>(u64::ge)?,
+
+            Instr::F32Eq => stack.relop::<f32, _, _>(f32::eq)?,
+            Instr::F32Ne => stack.relop::<f32, _, _>(f32::ne)?,
+            Instr::F32Lt => stack.relop::<f32, _, _>(f32::lt)?,
+            Instr::F32Gt => stack.relop::<f32, _, _>(f32::gt)?,
+            Instr::F32Le => stack.relop::<f32, _, _>(f32::le)?,
+            Instr::F32Ge => stack.relop::<f32, _, _>(f32::ge)?,
+
+            Instr::F64Eq => stack.relop::<f64, _, _>(f64::eq)?,
+            Instr::F64Ne => stack.relop::<f64, _, _>(f64::ne)?,
+            Instr::F64Lt => stack.relop::<f64, _, _>(f64::lt)?,
+            Instr::F64Gt => stack.relop::<f64, _, _>(f64::gt)?,
+            Instr::F64Le => stack.relop::<f64, _, _>(f64::le)?,
+            Instr::F64Ge => stack.relop::<f64, _, _>(f64::ge)?,
+
+
+            Instr::I32Clz => stack.unop(u32::leading_zeros)?,
+            Instr::I32Ctz => stack.unop(u32::trailing_zeros)?,
+            Instr::I32Popcnt => stack.unop(u32::count_zeros)?,
+            Instr::I32Add => stack.binop(u32::wrapping_add)?,
+            Instr::I32Sub => stack.binop(u32::wrapping_sub)?,
+            Instr::I32Mul => stack.binop(u32::wrapping_mul)?,
+            Instr::I32DivS => stack.binop_partial::<u32, _, _>(i32::checked_div)?,
+            Instr::I32DivU => stack.binop_partial::<u32, _, _>(u32::checked_div)?,
+            Instr::I32RemS => stack.binop_partial::<u32, _, _>(i32::checked_rem)?,
+            Instr::I32RemU => stack.binop_partial::<u32, _, _>(u32::checked_rem)?,
+            Instr::I32And => stack.binop(u32::bitand)?,
+            Instr::I32Or => stack.binop(u32::bitor)?,
+            Instr::I32Xor => stack.binop(u32::bitxor)?,
+            // 32 is magic but come on
+            Instr::I32Shl => stack.binop(|i: u32, j| i.shl(j % 32))?,
+            Instr::I32ShrS => stack.binop(|i: u32, j| i.shr(j % 32))?,
+            //TODO: there may be some culprits in the signed modulo
+            //spec says "j modulo 32", but rust use % as reminder (signed) not
+            //modulus (always >= 0).
+            //https://webassembly.github.io/spec/core/exec/numerics.html#op-ishr-s
+            Instr::I32ShrU => stack.binop(|i, j| (i as i32).shr(j % 32) as u32)?,
+            Instr::I32Rotl => stack.binop(u32::rotate_left)?,
+            Instr::I32Rotr => stack.binop(u32::rotate_right)?,
+
+
+            Instr::I64Clz => stack.unop(|i: u64| i.leading_zeros() as u64)?,
+            Instr::I64Ctz => stack.unop(|i: u64| i.trailing_zeros() as u64)?,
+            Instr::I64Popcnt => stack.unop(|i: u64| i.count_zeros() as u64)?,
+            Instr::I64Add => stack.binop(u64::wrapping_add)?,
+            Instr::I64Sub => stack.binop(u64::wrapping_sub)?,
+            Instr::I64Mul => stack.binop(u64::wrapping_mul)?,
+            Instr::I64DivS => stack.binop_partial::<u64, _, _>(i64::checked_div)?,
+            Instr::I64DivU => stack.binop_partial::<u64, _, _>(u64::checked_div)?,
+            Instr::I64RemS => stack.binop_partial::<u64, _, _>(i64::checked_rem)?,
+            Instr::I64RemU => stack.binop_partial::<u64, _, _>(u64::checked_rem)?,
+            Instr::I64And => stack.binop(u64::bitand)?,
+            Instr::I64Or => stack.binop(u64::bitor)?,
+            Instr::I64Xor => stack.binop(u64::bitxor)?,
+            // 64 is magic but come on
+            Instr::I64Shl => stack.binop(|i: u64, j| i.shl(j % 64))?,
+            Instr::I64ShrS => stack.binop(|i: u64, j| i.shr(j % 64))?,
+            //TODO: there may be some culprits in the signed modulo
+            //spec says "j modulo 64", but rust use % as reminder (signed) not
+            //modulus (always >= 0).
+            //https://webassembly.github.io/spec/core/exec/numerics.html#op-ishr-s
+            Instr::I64ShrU => stack.binop(|i, j| (i as i64).shr(j % 64) as u64)?,
+            Instr::I64Rotl => stack.binop(|i: u64, j| i.rotate_left(j as u32))?,
+            Instr::I64Rotr => stack.binop(|i: u64, j| i.rotate_left(j as u32))?,
+
+
             //TODO: remove this
             _ => unimplemented!(),
-
         };
         Ok(Continue)
     }
@@ -617,9 +650,7 @@ mod test {
                             then: Block {
                                 type_: Some(ValType::I64),
                                 continuation: BlockCont::Finish,
-                                instrs: vec![
-                                    Instr::I64Const(1),
-                                ],
+                                instrs: vec![Instr::I64Const(1)],
                             },
                             else_: Some(Block {
                                 type_: Some(ValType::I64),
@@ -631,7 +662,7 @@ mod test {
                                     Instr::I64Sub,
                                     Instr::Call(0),
                                     Instr::I64Mul,
-                                ]
+                                ],
                             }),
                         },
                     ],
@@ -648,8 +679,8 @@ mod test {
 
         let mut ctx = Context::new(&module);
 
-        // helper(&mut ctx, 0, 1);
-        // helper(&mut ctx, 1, 1);
+        helper(&mut ctx, 0, 1);
+        helper(&mut ctx, 1, 1);
         helper(&mut ctx, 2, 2);
         helper(&mut ctx, 3, 6);
         helper(&mut ctx, 4, 24);

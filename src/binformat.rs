@@ -134,7 +134,21 @@ named!(
                     else_: None})
             )
         ) |
-        0x0c => map!(le_usize, |idx| Instr::Br(idx))
+        0x0c => map!(le_usize, |idx| Instr::Br(idx)) |
+        0x0d => map!(le_usize, |idx| Instr::BrIf(idx)) |
+        0x0d => do_parse!(
+            table: length_count!(le_u32, le_usize) >>
+            label: le_usize >>
+            (Instr::BrTable(BrTableArgs {table, label}))
+        ) |
+        0x0f => value!(Instr::Return) |
+        0x10 => map!(le_usize, |idx| Instr::Call(idx)) |
+        0x11 => do_parse!(
+            idx: le_usize >>
+            call!(tag_byte, 0x00) >>
+            (Instr::CallIndirect(idx))
+        )
+
     )
 );
 

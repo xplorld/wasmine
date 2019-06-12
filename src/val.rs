@@ -1,7 +1,8 @@
 
 use crate::runtime::Trap;
-use std::convert::TryFrom;
 
+use byteorder::{ByteOrder, LittleEndian};
+use std::convert::TryFrom;
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ValType {
     I32,
@@ -42,9 +43,6 @@ impl From<&ValType> for Val {
         }
     }
 }
-
-//TODO: when trait alias is stablized, use it
-pub trait RawVal: Into<Val> + TryFrom<Val, Error = Trap> {}
 
 impl From<u32> for Val {
     fn from(i: u32) -> Val {
@@ -110,7 +108,37 @@ impl TryFrom<Val> for f64 {
     }
 }
 
+//TODO: when trait alias is stablized, use it
+pub trait RawVal: Copy + Into<Val> + TryFrom<Val, Error = Trap> {
+}
+
 impl RawVal for u32 {}
 impl RawVal for u64 {}
 impl RawVal for f32 {}
 impl RawVal for f64 {}
+
+pub trait FromSlice {
+   fn from_slice(s: &[u8]) -> Self; 
+}
+
+// cast rules: https://doc.rust-lang.org/nomicon/casts.html
+impl FromSlice for u8 {     fn from_slice(s: &[u8]) -> Self {          s[0]     }      }
+impl FromSlice for i8 {     fn from_slice(s: &[u8]) -> Self {          s[0] as i8     }      }
+impl FromSlice for u16 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_u16(s)     }      }
+impl FromSlice for i16 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_i16(s)     }      }
+impl FromSlice for u32 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_u32(s)     }      }
+impl FromSlice for i32 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_i32(s)     }      }
+impl FromSlice for u64 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_u64(s)     }      }
+impl FromSlice for f32 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_f32(s)     }      }
+impl FromSlice for f64 {     fn from_slice(s: &[u8]) -> Self {          LittleEndian::read_f64(s)     }      }
+
+pub trait ToSlice {
+     fn to_slice(src: Self, dst: &mut [u8]);
+}
+
+impl ToSlice for u8 {fn to_slice(src: Self, dst: &mut [u8]) {         dst[0] = src;     } }
+impl ToSlice for u16 {fn to_slice(src: Self, dst: &mut [u8]) {         LittleEndian::write_u16(dst, src)     } }
+impl ToSlice for u32 {fn to_slice(src: Self, dst: &mut [u8]) {         LittleEndian::write_u32(dst, src)     } }
+impl ToSlice for u64 {fn to_slice(src: Self, dst: &mut [u8]) {         LittleEndian::write_u64(dst, src)     } }
+impl ToSlice for f32 {fn to_slice(src: Self, dst: &mut [u8]) {         LittleEndian::write_f32(dst, src)     } }
+impl ToSlice for f64 {fn to_slice(src: Self, dst: &mut [u8]) {         LittleEndian::write_f64(dst, src)     } }

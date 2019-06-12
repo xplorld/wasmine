@@ -1,39 +1,46 @@
 
-/**
- * TODO: use unsafe to eliminate copying.
- */
-pub fn slice_to_u32(src: &[u8]) -> u32 {
-    let mut arr: [u8; 4] = [0; 4];
-    arr.copy_from_slice(src);
-    u32::from_le_bytes(arr)
+pub trait AsPrimitive<T>: Copy
+where
+    T: Copy,
+{
+    /// Convert a value to another, using the `as` operator.
+    fn as_(self) -> T;
 }
 
-pub fn slice_to_u64(src: &[u8]) -> u64 {
-    let mut arr: [u8; 8] = [0; 8];
-    arr.copy_from_slice(src);
-    u64::from_le_bytes(arr)
+macro_rules! impl_as_primitive {
+    (@ $T: ty => $(#[$cfg:meta])* impl $U: ty ) => {
+        $(#[$cfg])*
+        impl AsPrimitive<$U> for $T {
+            #[inline] fn as_(self) -> $U { self as $U }
+        }
+    };
+    (@ $T: ty => { $( $U: ty ),* } ) => {$(
+        impl_as_primitive!(@ $T => impl $U);
+    )*};
+    ($T: ty => { $( $U: ty ),* } ) => {
+        impl_as_primitive!(@ $T => { $( $U ),* });
+        impl_as_primitive!(@ $T => { u8, u16, u32, u64, usize });
+        impl_as_primitive!(@ $T => #[cfg(has_i128)] impl u128);
+        impl_as_primitive!(@ $T => { i8, i16, i32, i64, isize });
+        impl_as_primitive!(@ $T => #[cfg(has_i128)] impl i128);
+    };
 }
 
-pub fn slice_to_f32(src: &[u8]) -> f32 {
-    f32::from_bits(slice_to_u32(src))
-}
-
-pub fn slice_to_f64(src: &[u8]) -> f64 {
-    f64::from_bits(slice_to_u64(src))
-}
-
-pub fn u32_to_slice(src: u32, dst: &mut [u8]) {
-    dst.copy_from_slice(&src.to_le_bytes()[..])
-}
-
-pub fn u64_to_slice(src: u64, dst: &mut [u8]) {
-    dst.copy_from_slice(&src.to_le_bytes()[..])
-}
-
-pub fn f32_to_slice(src: f32, dst: &mut [u8]) {
-    u32_to_slice(src.to_bits(), dst)
-}
-
-pub fn f64_to_slice(src: f64, dst: &mut [u8]) {
-    u64_to_slice(src.to_bits(), dst)
-}
+impl_as_primitive!(u8 => { char, f32, f64 });
+impl_as_primitive!(i8 => { f32, f64 });
+impl_as_primitive!(u16 => { f32, f64 });
+impl_as_primitive!(i16 => { f32, f64 });
+impl_as_primitive!(u32 => { f32, f64 });
+impl_as_primitive!(i32 => { f32, f64 });
+impl_as_primitive!(u64 => { f32, f64 });
+impl_as_primitive!(i64 => { f32, f64 });
+#[cfg(has_i128)]
+impl_as_primitive!(u128 => { f32, f64 });
+#[cfg(has_i128)]
+impl_as_primitive!(i128 => { f32, f64 });
+impl_as_primitive!(usize => { f32, f64 });
+impl_as_primitive!(isize => { f32, f64 });
+impl_as_primitive!(f32 => { f32, f64 });
+impl_as_primitive!(f64 => { f32, f64 });
+impl_as_primitive!(char => { char });
+impl_as_primitive!(bool => {});
