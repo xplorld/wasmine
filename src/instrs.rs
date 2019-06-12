@@ -135,7 +135,6 @@ pub enum Instr {
     I64ShrU,
     I64Rotl,
     I64Rotr,
-    //TODO: impl
     F32Abs,
     F32Neg,
     F32Ceil,
@@ -164,6 +163,7 @@ pub enum Instr {
     F64Min,
     F64Max,
     F64Copysign,
+    //TODO: impl
     I32WrapI64,
     I32TruncF32S,
     I32TruncF32U,

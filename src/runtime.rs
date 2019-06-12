@@ -7,7 +7,7 @@ use std::error::Error;
 use std::fmt;
 
 use std::mem;
-use std::ops::{BitAnd, BitOr, BitXor, Shl, Shr};
+use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Shl, Shr, Sub};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Trap;
@@ -183,6 +183,16 @@ impl ValStack {
         let val2: T = self.pop()?.try_into()?;
         let val1: T = self.pop()?.try_into()?;
         Ok(self.push((op(&val1.as_(), &val2.as_()) as u32).into()))
+    }
+
+    fn cvtop<T, U, F>(&mut self, op: F) -> Result<(), Trap>
+    where
+        F: Fn(T) -> U,
+        T: RawVal + AsPrimitive<U>,
+        U: RawVal,
+    {
+        let val: T = self.pop()?.try_into()?;
+        Ok(self.push(op(val).into()))
     }
 }
 
@@ -602,9 +612,67 @@ impl<'a> Context<'a> {
             Instr::I64Rotl => stack.binop(|i: u64, j| i.rotate_left(j as u32))?,
             Instr::I64Rotr => stack.binop(|i: u64, j| i.rotate_left(j as u32))?,
 
+            Instr::F32Abs => stack.unop(f32::abs)?,
+            Instr::F32Neg => stack.unop(f32::neg)?,
+            Instr::F32Ceil => stack.unop(f32::ceil)?,
+            Instr::F32Floor => stack.unop(f32::floor)?,
+            Instr::F32Trunc => stack.unop(f32::trunc)?,
+            // f32::round may behave differently from f32.nearest...
+            // https://webassembly.github.io/spec/core/exec/numerics.html#op-fnearest
+            // https://doc.rust-lang.org/std/primitive.f32.html#method.round
+            Instr::F32Nearest => stack.unop(f32::round)?,
+            Instr::F32Sqrt => stack.unop(f32::sqrt)?,
+            Instr::F32Add => stack.binop(f32::add)?,
+            Instr::F32Sub => stack.binop(f32::sub)?,
+            Instr::F32Mul => stack.binop(f32::mul)?,
+            Instr::F32Div => stack.binop(f32::div)?,
+            Instr::F32Min => stack.binop(f32::min)?,
+            Instr::F32Max => stack.binop(f32::max)?,
+            Instr::F32Copysign => stack.binop(f32::copysign)?,
 
-            //TODO: remove this
-            _ => unimplemented!(),
+            Instr::F64Abs => stack.unop(f64::abs)?,
+            Instr::F64Neg => stack.unop(f64::neg)?,
+            Instr::F64Ceil => stack.unop(f64::ceil)?,
+            Instr::F64Floor => stack.unop(f64::floor)?,
+            Instr::F64Trunc => stack.unop(f64::trunc)?,
+            // f64::round may behave differently from f64.nearest...
+            // https://webassembly.github.io/spec/core/exec/numerics.html#op-fnearest
+            // https://doc.rust-lang.org/std/primitive.f64.html#method.round
+            Instr::F64Nearest => stack.unop(f64::round)?,
+            Instr::F64Sqrt => stack.unop(f64::sqrt)?,
+            Instr::F64Add => stack.binop(f64::add)?,
+            Instr::F64Sub => stack.binop(f64::sub)?,
+            Instr::F64Mul => stack.binop(f64::mul)?,
+            Instr::F64Div => stack.binop(f64::div)?,
+            Instr::F64Min => stack.binop(f64::min)?,
+            Instr::F64Max => stack.binop(f64::max)?,
+            Instr::F64Copysign => stack.binop(f64::copysign)?,
+
+            Instr::I32WrapI64 => stack.cvtop(|i: u64| i as u32)?,
+            Instr::I32TruncF32S => stack.cvtop(|i: f32| (i as i32) as u32)?,
+            Instr::I32TruncF32U => stack.cvtop(|i: f32| i as u32)?,
+            Instr::I32TruncF64S => stack.cvtop(|i: f64| (i as i32) as u32)?,
+            Instr::I32TruncF64U => stack.cvtop(|i: f64| i as u32)?,
+            Instr::I64ExtendI32S => stack.cvtop(|i: u32| (i as i64) as u64)?,
+            Instr::I64ExtendI32U => stack.cvtop(|i: u32| i as u64)?,
+            Instr::I64TruncF32S => stack.cvtop(|i: f32| (i as i64) as u64)?,
+            Instr::I64TruncF32U => stack.cvtop(|i: f32| i as u64)?,
+            Instr::I64TruncF64S => stack.cvtop(|i: f64| (i as i64) as u64)?,
+            Instr::I64TruncF64U => stack.cvtop(|i: f64| i as u64)?,
+            Instr::F32ConvertI32S => stack.cvtop(|i: u32| i as f32)?,
+            Instr::F32ConvertI32U => stack.cvtop(|i: u32| i as f32)?,
+            Instr::F32ConvertI64S => stack.cvtop(|i: u64| i as f32)?,
+            Instr::F32ConvertI64U => stack.cvtop(|i: u64| i as f32)?,
+            Instr::F32DemoteF64 => stack.cvtop(|i: f64| i as f32)?,
+            Instr::F64ConvertI32S => stack.cvtop(|i: u32| i as f64)?,
+            Instr::F64ConvertI32U => stack.cvtop(|i: u32| i as f64)?,
+            Instr::F64ConvertI64S => stack.cvtop(|i: u64| i as f64)?,
+            Instr::F64ConvertI64U => stack.cvtop(|i: u64| i as f64)?,
+            Instr::F64PromoteF32 => stack.cvtop(|i: f32| i as f64)?,
+            Instr::I32ReinterpretF32 => stack.cvtop(f32::to_bits)?,
+            Instr::I64ReinterpretF64 => stack.cvtop(f64::to_bits)?,
+            Instr::F32ReinterpretI32 => stack.cvtop(f32::from_bits)?,
+            Instr::F64ReinterpretI64 => stack.cvtop(f64::from_bits)?,
         };
         Ok(Continue)
     }
