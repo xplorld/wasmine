@@ -21,7 +21,7 @@ pub struct Module {
     // tables: Vec<Table>, // only have one for now
     // have one and only one mem
     // if there are none, we instead have a Mem with zero min and max
-    pub mems: Mem,
+    pub mem: Mem,
     pub globals: Vec<Global>,
     // elem: Vec<Elem>,
     // data: Vec<Data>,
@@ -54,15 +54,20 @@ impl Type {
 pub struct FuncRef {}
 
 #[derive(Debug)]
-pub struct Function {
-    pub type_: Type,
+pub struct Code {
     pub locals: Vec<ValType>,
-    pub body: Block,
+    pub body: Expr,
+}
+
+#[derive(Debug)]
+pub struct Function {
+    pub type_: usize,
+    pub code: Code,
 }
 
 impl Function {
     pub fn new_locals(&self) -> Vec<Val> {
-        self.locals.iter().map(Val::from).collect()
+        self.code.locals.iter().map(Val::from).collect()
     }
 }
 
@@ -81,6 +86,12 @@ pub struct Limits {
 #[derive(Debug)]
 pub struct Mem {
     pub limits: Limits,
+}
+
+impl Mem {
+    pub fn empty() -> Self {
+        Mem{limits: Limits{min: 0, max: Some(0)}}
+    }
 }
 
 #[derive(Debug)]

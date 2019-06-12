@@ -7,6 +7,27 @@ use nom::IResult;
 
 use std::str::from_utf8;
 
+/**
+ * both is None -> Some(empty)
+ * one is None -> None
+ * both is Some, size mismatch -> None
+ * both is Some, size matches -> Some(vec)
+ */
+fn zip_funcs(input: (Option<Vec<usize>>, Option<Vec<Code>>)) -> Option<Vec<Function>> {
+    match input {
+        (None, None) => Some(vec![]),
+        (Some(types), Some(codes)) => {
+            if types.len() != codes.len() {
+                None
+            } else {
+                Some(types.into_iter().zip(codes.into_iter())
+                .map(|(type_, code)|Function{type_, code})
+                .collect())
+            }
+        }
+        _ => None,
+    }
+}
 
 named!(le_usize<usize>, map!(le_u32, |l| l as usize));
 
@@ -103,9 +124,6 @@ named!(
     do_parse!(align: le_u32 >> offset: le_u32 >> (Memarg { align, offset }))
 );
 
-// during parsing, we could not find continuations for Labels. They are assigned
-// usize::MAX (which is appearently illegal) and wait for an operation of
-// validation-and-assign, namely Expr::try_from.
 named!(
     instr<Instr>,
     switch!(le_u8,
@@ -327,4 +345,189 @@ named!(
 named_args!(
     instrs_till(end: u8)<Vec<Instr>>,
     map!(many_till!(instr, call!(tag_byte, end)), |t| t.0)
+);
+
+named!(
+    expr<Vec<Instr>>,
+    call!(instrs_till, 0x0b)
+);
+
+named!(
+    global<Global>,
+    do_parse!(
+       type_: globaltype >>
+       init: map!(expr, |instrs| Expr {instrs}) >>
+       (Global{type_, init})
+    )
+);
+
+named!(
+    code<Code>,
+    do_parse!(
+        le_u32 >> // length of binary, ignored
+        locals: length_count!(le_usize, valtype) >>
+        instrs: expr >>
+        (Code {locals, body: Expr {instrs}})
+    )
+);
+
+named!(
+    section_custom<()>,
+    do_parse!(
+        call!(tag_byte, 0x00) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+named!(
+    section_type<Vec<Type>>,
+    do_parse!(
+        call!(tag_byte, 0x01) >>
+        types: length_count!(le_usize, functype) >>
+        (types)
+    )
+);
+
+
+//TODO
+named!(
+    section_import<()>,
+    do_parse!(
+        call!(tag_byte, 0x02) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+
+//Function section contains only typeIdxes
+named!(
+    section_func<Vec<usize>>,
+    do_parse!(
+        call!(tag_byte, 0x03) >>
+        funcs: length_count!(le_usize, le_usize) >>
+        (funcs)
+    )
+);
+
+//TODO
+named!(
+    section_table<()>,
+    do_parse!(
+        call!(tag_byte, 0x04) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+// expects 0 or 1 Mem in a vector.
+// if is 0, return a Mem with zero limit.
+named!(
+    section_mem<Mem>,
+    do_parse!(
+        call!(tag_byte, 0x05) >>
+        mems: verify!(length_count!(le_usize, memtype), |mems: &Vec<Mem>| mems.len() <= 1) >>
+        (mems.pop().unwrap_or_else(Mem::empty))
+    )
+);
+
+named!(
+    section_global<Vec<Global>>,
+    do_parse!(
+        call!(tag_byte, 0x06) >>
+        globals: length_count!(le_usize, global) >>
+        (globals)
+    )
+);
+
+
+
+//TODO
+named!(
+    section_export<()>,
+    do_parse!(
+        call!(tag_byte, 0x07) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+//TODO
+named!(
+    section_start<()>,
+    do_parse!(
+        call!(tag_byte, 0x08) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+//TODO
+named!(
+    section_element<()>,
+    do_parse!(
+        call!(tag_byte, 0x09) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+named!(
+    section_code<Vec<Code>>,
+    do_parse!(
+        call!(tag_byte, 0x0a) >>
+        code: length_count!(le_usize, code) >>
+        (code)
+    )
+);
+
+//TODO
+named!(
+    section_data<()>,
+    do_parse!(
+        call!(tag_byte, 0x0b) >>
+        size: le_usize >>
+        take!(size) >>
+        (())
+    )
+);
+
+named!(
+    module<Module>,
+    do_parse!(
+        tag!(&[0x00, 0x61, 0x73, 0x6D]) >> // magic
+        tag!(&[0x01, 0x00, 0x00, 0x00]) >> // version
+        opt!(section_custom) >>
+        types: opt!(section_type) >>
+        opt!(section_custom) >>
+        imports: opt!(section_import) >>
+        opt!(section_custom) >>
+        functypes: opt!(section_func) >>
+        opt!(section_custom) >>
+        tables: opt!(section_table) >>
+        opt!(section_custom) >>
+        mem: opt!(section_mem) >>
+        opt!(section_custom) >>
+        globals: opt!(section_global) >>
+        opt!(section_custom) >>
+        codes: opt!(section_code) >>
+        opt!(section_custom) >>
+        data: opt!(section_data) >>
+        opt!(section_custom) >>
+        funcs: map_opt!(value!((functypes, codes)), zip_funcs) >>
+        
+        (Module {
+            types: types.unwrap_or_else(|| vec![]),
+            funcs,
+            mem: mem.unwrap_or_else(Mem::empty),
+            globals: globals.unwrap_or_else(|| vec![]),
+        })
+    )
 );

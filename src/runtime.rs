@@ -310,7 +310,7 @@ impl<'a> Context<'a> {
         Context {
             module: module,
             runtime: Runtime {
-                mem: MemInst::new(&module.mems),
+                mem: MemInst::new(&module.mem),
                 globals: module.globals.iter().map(GlobalInst::new).collect(),
             },
         }
@@ -737,12 +737,7 @@ mod test {
                 },
             }],
             globals: vec![],
-            mems: Mem {
-                limits: Limits {
-                    min: 0,
-                    max: Some(0),
-                },
-            },
+            mem: Mem::empty(), 
         };
 
         let mut ctx = Context::new(&module);
