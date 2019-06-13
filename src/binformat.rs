@@ -1,6 +1,8 @@
 use crate::instrs::Instr;
 
 use crate::types::*;
+use nom::bytes::complete::tag;
+use nom::combinator::opt;
 use nom::error::ErrorKind;
 use nom::number::complete::{le_f32, le_f64, le_u32, le_u64, le_u8};
 use nom::IResult;
@@ -20,9 +22,13 @@ fn zip_funcs(input: (Option<Vec<usize>>, Option<Vec<Code>>)) -> Option<Vec<Funct
             if types.len() != codes.len() {
                 None
             } else {
-                Some(types.into_iter().zip(codes.into_iter())
-                .map(|(type_, code)|Function{type_, code})
-                .collect())
+                Some(
+                    types
+                        .into_iter()
+                        .zip(codes.into_iter())
+                        .map(|(type_, code)| Function { type_, code })
+                        .collect(),
+                )
             }
         }
         _ => None,
@@ -347,17 +353,12 @@ named_args!(
     map!(many_till!(instr, call!(tag_byte, end)), |t| t.0)
 );
 
-named!(
-    expr<Vec<Instr>>,
-    call!(instrs_till, 0x0b)
-);
+named!(expr<Vec<Instr>>, call!(instrs_till, 0x0b));
 
 named!(
     global<Global>,
     do_parse!(
-       type_: globaltype >>
-       init: map!(expr, |instrs| Expr {instrs}) >>
-       (Global{type_, init})
+        type_: globaltype >> init: map!(expr, |instrs| Expr { instrs }) >> (Global { type_, init })
     )
 );
 
@@ -373,55 +374,32 @@ named!(
 
 named!(
     section_custom<()>,
-    do_parse!(
-        call!(tag_byte, 0x00) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x00) >> size: le_usize >> take!(size) >> (()))
 );
 
 named!(
     section_type<Vec<Type>>,
-    do_parse!(
-        call!(tag_byte, 0x01) >>
-        types: length_count!(le_usize, functype) >>
-        (types)
-    )
+    do_parse!(call!(tag_byte, 0x01) >> types: length_count!(le_usize, functype) >> (types))
 );
 
 
 //TODO
 named!(
     section_import<()>,
-    do_parse!(
-        call!(tag_byte, 0x02) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x02) >> size: le_usize >> take!(size) >> (()))
 );
 
 
 //Function section contains only typeIdxes
 named!(
     section_func<Vec<usize>>,
-    do_parse!(
-        call!(tag_byte, 0x03) >>
-        funcs: length_count!(le_usize, le_usize) >>
-        (funcs)
-    )
+    do_parse!(call!(tag_byte, 0x03) >> funcs: length_count!(le_usize, le_usize) >> (funcs))
 );
 
 //TODO
 named!(
     section_table<()>,
-    do_parse!(
-        call!(tag_byte, 0x04) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x04) >> size: le_usize >> take!(size) >> (()))
 );
 
 // expects 0 or 1 Mem in a vector.
@@ -429,105 +407,83 @@ named!(
 named!(
     section_mem<Mem>,
     do_parse!(
-        call!(tag_byte, 0x05) >>
-        mems: verify!(length_count!(le_usize, memtype), |mems: &Vec<Mem>| mems.len() <= 1) >>
-        (mems.pop().unwrap_or_else(Mem::empty))
+        call!(tag_byte, 0x05)
+            >> mems: verify!(length_count!(le_usize, memtype), |mems: &Vec<Mem>| mems
+                .len()
+                <= 1)
+            >> (if mems.is_empty() {
+                Mem::empty()
+            } else {
+                mems[0]
+            }) //copied but come on
     )
 );
 
 named!(
     section_global<Vec<Global>>,
-    do_parse!(
-        call!(tag_byte, 0x06) >>
-        globals: length_count!(le_usize, global) >>
-        (globals)
-    )
+    do_parse!(call!(tag_byte, 0x06) >> globals: length_count!(le_usize, global) >> (globals))
 );
-
 
 
 //TODO
 named!(
     section_export<()>,
-    do_parse!(
-        call!(tag_byte, 0x07) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x07) >> size: le_usize >> take!(size) >> (()))
 );
 
 //TODO
 named!(
     section_start<()>,
-    do_parse!(
-        call!(tag_byte, 0x08) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x08) >> size: le_usize >> take!(size) >> (()))
 );
 
 //TODO
 named!(
     section_element<()>,
-    do_parse!(
-        call!(tag_byte, 0x09) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x09) >> size: le_usize >> take!(size) >> (()))
 );
 
 named!(
     section_code<Vec<Code>>,
-    do_parse!(
-        call!(tag_byte, 0x0a) >>
-        code: length_count!(le_usize, code) >>
-        (code)
-    )
+    do_parse!(call!(tag_byte, 0x0a) >> code: length_count!(le_usize, code) >> (code))
 );
 
 //TODO
 named!(
     section_data<()>,
-    do_parse!(
-        call!(tag_byte, 0x0b) >>
-        size: le_usize >>
-        take!(size) >>
-        (())
-    )
+    do_parse!(call!(tag_byte, 0x0b) >> size: le_usize >> take!(size) >> (()))
 );
 
-named!(
-    module<Module>,
-    do_parse!(
-        tag!(&[0x00, 0x61, 0x73, 0x6D]) >> // magic
-        tag!(&[0x01, 0x00, 0x00, 0x00]) >> // version
-        opt!(section_custom) >>
-        types: opt!(section_type) >>
-        opt!(section_custom) >>
-        imports: opt!(section_import) >>
-        opt!(section_custom) >>
-        functypes: opt!(section_func) >>
-        opt!(section_custom) >>
-        tables: opt!(section_table) >>
-        opt!(section_custom) >>
-        mem: opt!(section_mem) >>
-        opt!(section_custom) >>
-        globals: opt!(section_global) >>
-        opt!(section_custom) >>
-        codes: opt!(section_code) >>
-        opt!(section_custom) >>
-        data: opt!(section_data) >>
-        opt!(section_custom) >>
-        funcs: map_opt!(value!((functypes, codes)), zip_funcs) >>
-        
-        (Module {
+pub fn module(i: &[u8]) -> IResult<&[u8], Module> {
+    let (i, _) = tag(&[0x00, 0x61, 0x73, 0x6D])(i)?;
+    let (i, _) = tag(&[0x01, 0x00, 0x00, 0x00])(i)?; //version
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, types) = opt(section_type)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, imports) = opt(section_import)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, functypes) = opt(section_func)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, tables) = opt(section_table)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, mem) = opt(section_mem)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, globals) = opt(section_global)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, codes) = opt(section_code)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let (i, data) = opt(section_data)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    let funcs =
+        zip_funcs((functypes, codes)).ok_or_else(|| nom::Err::Error((i, ErrorKind::MapOpt)))?;
+
+    Ok((
+        i,
+        Module {
             types: types.unwrap_or_else(|| vec![]),
             funcs,
             mem: mem.unwrap_or_else(Mem::empty),
             globals: globals.unwrap_or_else(|| vec![]),
-        })
-    )
-);
+        },
+    ))
+}

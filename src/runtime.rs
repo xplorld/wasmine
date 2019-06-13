@@ -1,4 +1,4 @@
-//TODO: make use of FuncInst in Ctx
+//TODO: make use of FuncInst in rt
 use crate::instrs::*;
 use crate::types::*;
 use crate::util::AsPrimitive;
@@ -76,12 +76,19 @@ impl GlobalInst {
     }
 }
 
-#[derive(Debug)]
-pub struct Runtime {
-    mem: MemInst,
-    globals: Vec<GlobalInst>,
+//TODO: currently only native functions
+// need support imported functions
+#[derive(Debug, Clone, Copy)]
+pub struct FuncInst<'a> {
+    type_: &'a Type,
+    code: &'a Code,
 }
 
+impl<'a> FuncInst<'a> {
+    pub fn new_locals(&'a self) -> Vec<Val> {
+        self.code.locals.iter().map(Val::from).collect()
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum LabelCont {
@@ -205,7 +212,7 @@ impl ValStack {
 }
 
 /**
- * Local context of an invocation.
+ * Local Runtime of an invocation.
  *
  * A frame corresponds with a function invocation,
  * and consists of an arity and a set of locals.
@@ -213,7 +220,7 @@ impl ValStack {
  *
  */
 #[derive(Debug)]
-    pub struct Frame<'a> {
+pub struct Frame<'a> {
     valstack: ValStack,
     labelstack: Vec<Label<'a>>,
     arity: usize, // 0 or 1
@@ -246,18 +253,39 @@ impl<'a> Frame<'a> {
 
 }
 
-/**
- * Separate readonly insts from all states
- * so that we could borrow the inst and mutate runtime in the same tme.
- */
+
 #[derive(Debug)]
-pub struct Context<'a> {
-    module: &'a Module,
-    runtime: Runtime,
+pub struct Runtime<'a> {
+    funcs: Vec<FuncInst<'a>>,
+    mem: MemInst,
+    globals: Vec<GlobalInst>,
 }
 
 
-impl<'a> Context<'a> {
+impl<'a> Runtime<'a> {
+
+    fn instantiate_functions(module: &'a Module) -> Result<Vec<FuncInst<'a>>, Trap> {
+        module
+            .funcs
+            .iter()
+            .map(|f| {
+                Ok(FuncInst {
+                    type_: module.types.get(f.type_).ok_or(Trap {})?,
+                    code: &f.code,
+                })
+            })
+            .collect::<Result<Vec<FuncInst<'a>>, Trap>>()
+    }
+
+    fn instantiate(module: &'a Module) -> Result<Runtime<'a>, Trap> {
+        let rt = Runtime {
+            mem: MemInst::new(&module.mem),
+            globals: module.globals.iter().map(GlobalInst::new).collect(),
+            funcs: Runtime::instantiate_functions(module)?,
+        };
+        Ok(rt)
+    }
+
     /**
      *
      * Load a value of type U from mem into stack as type T.
@@ -280,9 +308,9 @@ impl<'a> Context<'a> {
         let base: u32 = frame.valstack.pop()?.try_into()?;
         let eff: usize = (base + memarg.offset).try_into().unwrap();
         let tail = eff + mem::size_of::<U>();
-        let data = &self.runtime.mem.data;
+        let data = &self.mem.data;
         assert_or_trap(data.len() < tail)?;
-        let val: T = U::from_slice(&self.runtime.mem.data[eff..tail]).as_();
+        let val: T = U::from_slice(&self.mem.data[eff..tail]).as_();
         frame.valstack.push(val.into());
         Ok(())
     }
@@ -309,23 +337,16 @@ impl<'a> Context<'a> {
 
         let eff = (base + memarg.offset) as usize;
         let tail = eff + mem::size_of::<U>();
-        let data = &mut self.runtime.mem.data;
+        let data = &mut self.mem.data;
         assert_or_trap(data.len() >= tail)?;
         U::to_slice(val, &mut data[eff..tail]);
         Ok(())
     }
 
-    fn new(module: &'a Module) -> Context<'a> {
-        Context {
-            module: module,
-            runtime: Runtime {
-                mem: MemInst::new(&module.mem),
-                globals: module.globals.iter().map(GlobalInst::new).collect(),
-            },
-        }
-    }
-
-    fn new_frame(&self, func: &'a Function, args: &[Val]) -> Frame<'a> {
+    fn new_frame<'b>(&self, func: FuncInst<'b>, args: &[Val]) -> Frame<'b>
+    where
+        'a: 'b,
+    {
         let mut frame = Frame {
             labelstack: vec![Label {
                 pc: 0,
@@ -344,7 +365,10 @@ impl<'a> Context<'a> {
 
         frame
     }
-    pub fn invoke(&mut self, func: &'a Function, args: &[Val]) -> InvocationResult {
+    pub fn invoke<'b>(&mut self, func: FuncInst<'b>, args: &[Val]) -> InvocationResult
+    where
+        'a: 'b,
+    {
         use self::StepNormalResult::*;
         let mut frame = self.new_frame(func, args);
         loop {
@@ -366,8 +390,10 @@ impl<'a> Context<'a> {
      *
      * Never panics, as long as validation passes.
      */
-    fn step(&mut self, frame: &mut Frame) -> StepResult {
-
+    fn step<'b>(&'b mut self, frame: &mut Frame) -> StepResult
+    where
+        'a: 'b,
+    {
         use self::StepNormalResult::*;
 
         //TODO: seems nasty. How to make it clean?
@@ -433,12 +459,12 @@ impl<'a> Context<'a> {
              */
             Instr::GlobalGet(idx) => {
                 // for what time will Non-lexical lifetimes goes sub-stmt?
-                let val = self.runtime.globals[*idx].val;
+                let val = self.globals[*idx].val;
                 stack.push(val);
             }
             Instr::GlobalSet(idx) => {
                 let val = stack.pop().unwrap();
-                let global = &mut self.runtime.globals[*idx];
+                let global = &mut self.globals[*idx];
                 // Validation ensures that the global is, in fact, marked as mutable.
                 // https://webassembly.github.io/spec/core/bikeshed/index.html#-hrefsyntax-instr-variablemathsfglobalsetx%E2%91%A0
                 global.val = val;
@@ -478,7 +504,7 @@ impl<'a> Context<'a> {
             Instr::BrTable(args) => unimplemented!(),
             Instr::Return => return stack.return_value(frame.arity),
             Instr::Call(idx) => {
-                let func = &self.module.funcs[*idx];
+                let func = self.funcs[*idx];
                 let arity = func.type_.arity();
                 let len = stack.len();
                 let args: Vec<Val> = stack
@@ -690,21 +716,18 @@ impl<'a> Context<'a> {
         Ok(Continue)
     }
 }
-
 #[cfg(test)]
 mod test {
 
     use super::*;
 
-    fn helper(ctx: &mut Context, arg: u64, expected: u64) {
-        let ret: u64 = ctx
-            .invoke(&ctx.module.funcs[0], &[arg.into()])
-            .ok()
-            .unwrap()
-            .unwrap()
+    fn helper(rt: &mut Runtime, arg: u64, expected: u64) {
+        let ret: u64 = rt
+            .invoke(rt.funcs[0], &[arg.into()])
+            .expect("invocation succeed")
+            .expect("return value")
             .try_into()
-            .ok()
-            .unwrap();
+            .expect("got u64");
         assert_eq!(ret, expected);
     }
 
@@ -718,48 +741,50 @@ mod test {
         let module = Module {
             types: vec![type_.clone()],
             funcs: vec![Function {
-                type_: type_.clone(),
-                locals: vec![ValType::I64],
-                body: Block {
-                    type_: Some(ValType::I64),
-                    continuation: LabelCont::Finish,
-                    instrs: vec![
-                        Instr::LocalGet(0),
-                        Instr::I64Const(0),
-                        Instr::I64Eq,
-                        Instr::IfElse {
-                            then: Block {
-                                type_: Some(ValType::I64),
-                                continuation: LabelCont::Finish,
-                                instrs: vec![Instr::I64Const(1)],
+                type_: 0,
+                code: Code {
+                    locals: vec![ValType::I64],
+                    body: Expr {
+                        instrs: vec![
+                            Instr::LocalGet(0),
+                            Instr::I64Const(0),
+                            Instr::I64Eq,
+                            Instr::IfElse {
+                                then: Block {
+                                    type_: Some(ValType::I64),
+                                    expr: Expr {
+                                        instrs: vec![Instr::I64Const(1)],
+                                    },
+                                },
+                                else_: Some(Block {
+                                    type_: Some(ValType::I64),
+                                    expr: Expr {
+                                        instrs: vec![
+                                            Instr::LocalGet(0),
+                                            Instr::LocalGet(0),
+                                            Instr::I64Const(1),
+                                            Instr::I64Sub,
+                                            Instr::Call(0),
+                                            Instr::I64Mul,
+                                        ],
+                                    },
+                                }),
                             },
-                            else_: Some(Block {
-                                type_: Some(ValType::I64),
-                                continuation: LabelCont::Finish,
-                                instrs: vec![
-                                    Instr::LocalGet(0),
-                                    Instr::LocalGet(0),
-                                    Instr::I64Const(1),
-                                    Instr::I64Sub,
-                                    Instr::Call(0),
-                                    Instr::I64Mul,
-                                ],
-                            }),
-                        },
-                    ],
+                        ],
+                    },
                 },
             }],
             globals: vec![],
-            mem: Mem::empty(), 
+            mem: Mem::empty(),
         };
 
-        let mut ctx = Context::new(&module);
+        let mut rt = Runtime::instantiate(&module)?;
 
-        helper(&mut ctx, 0, 1);
-        helper(&mut ctx, 1, 1);
-        helper(&mut ctx, 2, 2);
-        helper(&mut ctx, 3, 6);
-        helper(&mut ctx, 4, 24);
+        helper(&mut rt, 0, 1);
+        helper(&mut rt, 1, 1);
+        helper(&mut rt, 2, 2);
+        helper(&mut rt, 3, 6);
+        helper(&mut rt, 4, 24);
         Ok(())
     }
 }

@@ -65,11 +65,6 @@ pub struct Function {
     pub code: Code,
 }
 
-impl Function {
-    pub fn new_locals(&self) -> Vec<Val> {
-        self.code.locals.iter().map(Val::from).collect()
-    }
-}
 
 #[derive(Debug)]
 pub struct Table {
@@ -77,13 +72,13 @@ pub struct Table {
     pub elemtype: FuncRef,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub min: usize,
     pub max: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Mem {
     pub limits: Limits,
 }
@@ -234,22 +229,3 @@ impl Block {
  */
 
 pub struct WasmineHostFunction {}
-
-pub enum FuncInst {
-    Wasm {
-        type_: Type,
-        code: Function,
-    },
-    Host {
-        type_: Type,
-        hostcode: WasmineHostFunction,
-    },
-}
-
-
-struct Store {
-    funcs: FuncInst,
-    // tables: TableInst,
-    // mems: MemInst,
-    // globals: GlobalInst,
-}

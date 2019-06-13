@@ -6,7 +6,7 @@ extern crate nom;
 #[macro_use]
 extern crate log;
 
-mod binformat;
+pub mod binformat;
 mod instrs;
 mod nom_ext;
 mod runtime;
