@@ -28,6 +28,7 @@ pub enum Instr {
     Nop,
     Unreachable,
     Block(Block),
+    Loop(Block),
     IfElse { then: Block, else_: Option<Block> },
     Br(Idx),
     BrIf(Idx),

@@ -1,4 +1,4 @@
-
+//TODO: make use of FuncInst in Ctx
 use crate::instrs::*;
 use crate::types::*;
 use crate::util::AsPrimitive;
@@ -82,13 +82,21 @@ pub struct Runtime {
     globals: Vec<GlobalInst>,
 }
 
+
+#[derive(Debug, Clone, Copy)]
+pub enum LabelCont {
+    Finish,
+    Loop,
+}
+
 /**
  * Label: instrs, continuation, arity, (pc)
  */
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct Label<'a> {
     pc: Idx,
-    block: &'a Block,
+    expr: &'a Expr,
+    continuation: LabelCont,
     // idx of first val in valstack of this frame
     // always <= valstack.len()
     val_idx: Idx,
@@ -205,7 +213,7 @@ impl ValStack {
  *
  */
 #[derive(Debug)]
-pub struct Frame<'a> {
+    pub struct Frame<'a> {
     valstack: ValStack,
     labelstack: Vec<Label<'a>>,
     arity: usize, // 0 or 1
@@ -213,10 +221,11 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    fn enter(&mut self, block: &'a Block) {
+    fn enter(&mut self, block: &'a Block, cont: LabelCont) {
         let label = Label {
             pc: 0,
-            block,
+            expr: &block.expr,
+            continuation: cont,
             val_idx: self.valstack.len(),
         };
         self.labelstack.push(label);
@@ -320,7 +329,8 @@ impl<'a> Context<'a> {
         let mut frame = Frame {
             labelstack: vec![Label {
                 pc: 0,
-                block: &func.body,
+                expr: &func.code.body,
+                continuation: LabelCont::Finish,
                 val_idx: 0,
             }],
             valstack: ValStack { stack: vec![] },
@@ -367,16 +377,16 @@ impl<'a> Context<'a> {
             return frame.valstack.return_value(frame.arity);
         }
         let label = frame.labelstack.last_mut().unwrap();
-        let instr = label.block.instrs.get(label.pc);
+        let instr = label.expr.instrs.get(label.pc);
         if instr.is_none() {
             // this block comes to an end (as everything)
             // as spec, values are left untouched, but the label shall exit
             // as an optimization, we implement loop here
-            match label.block.continuation {
-                BlockCont::Finish => {
+            match label.continuation {
+                LabelCont::Finish => {
                     frame.labelstack.pop();
                 }
-                BlockCont::Loop => {
+                LabelCont::Loop => {
                     label.pc = 0;
                 }
             }
@@ -437,15 +447,18 @@ impl<'a> Context<'a> {
             Instr::Unreachable => return Err(Trap {}),
 
             Instr::Block(block) => {
-                frame.enter(block);
+                frame.enter(block, LabelCont::Finish);
+            }
+            Instr::Loop(block) => {
+                frame.enter(block, LabelCont::Finish);
             }
             Instr::IfElse { then, else_ } => {
                 let cond: u32 = stack.pop()?.try_into()?;
                 if cond != 0 {
-                    frame.enter(then);
+                    frame.enter(then, LabelCont::Finish);
                 } else {
                     if let Some(else_) = else_ {
-                        frame.enter(else_);
+                        frame.enter(else_, LabelCont::Finish);
                     }
                 }
             }
@@ -709,7 +722,7 @@ mod test {
                 locals: vec![ValType::I64],
                 body: Block {
                     type_: Some(ValType::I64),
-                    continuation: BlockCont::Finish,
+                    continuation: LabelCont::Finish,
                     instrs: vec![
                         Instr::LocalGet(0),
                         Instr::I64Const(0),
@@ -717,12 +730,12 @@ mod test {
                         Instr::IfElse {
                             then: Block {
                                 type_: Some(ValType::I64),
-                                continuation: BlockCont::Finish,
+                                continuation: LabelCont::Finish,
                                 instrs: vec![Instr::I64Const(1)],
                             },
                             else_: Some(Block {
                                 type_: Some(ValType::I64),
-                                continuation: BlockCont::Finish,
+                                continuation: LabelCont::Finish,
                                 instrs: vec![
                                     Instr::LocalGet(0),
                                     Instr::LocalGet(0),

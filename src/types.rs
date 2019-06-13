@@ -61,7 +61,7 @@ pub struct Code {
 
 #[derive(Debug)]
 pub struct Function {
-    pub type_: usize,
+    pub type_: Idx,
     pub code: Code,
 }
 
@@ -211,20 +211,13 @@ pub struct BrTableArgs {
 }
 
 
-#[derive(Debug)]
-pub enum BlockCont {
-    Finish,
-    Loop,
-}
-
 /**
  * A block of control flow.
  */
 #[derive(Debug)]
 pub struct Block {
     pub type_: Option<ValType>, // 0 or 1
-    pub instrs: Vec<Instr>,
-    pub continuation: BlockCont,
+    pub expr: Expr,
 }
 
 impl Block {

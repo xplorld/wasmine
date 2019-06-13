@@ -132,25 +132,25 @@ named!(
         | 0x02 => do_parse!(
             type_: blocktype >>
             instrs: call!(instrs_till, 0x0b) >>
-            (Instr::Block (Block {type_, instrs, continuation: BlockCont::Finish})))
+            (Instr::Block (Block {type_, expr: Expr {instrs}})))
         | 0x03 => do_parse!(
             type_: blocktype >>
             instrs: call!(instrs_till, 0x0b) >>
-            (Instr::Block (Block {type_, instrs, continuation: BlockCont::Loop})))
+            (Instr::Loop (Block {type_, expr: Expr{instrs}})))
         | 0x04 => alt!(
             do_parse!(
                 type_: blocktype >>
                 then: call!(instrs_till, 0x05) >>
                 else_: call!(instrs_till, 0x0b) >>
                 (Instr::IfElse{
-                    then: Block{type_, instrs: then, continuation: BlockCont::Finish},
-                    else_: Some(Block{type_, instrs: else_, continuation: BlockCont::Finish})})
+                    then: Block{type_, expr: Expr{instrs: then}},
+                    else_: Some(Block{type_, expr: Expr{instrs: else_}})})
             )
           | do_parse!(
                 type_: blocktype >>
                 instrs: call!(instrs_till, 0x0b) >>
                 (Instr::IfElse{
-                    then: Block {type_, instrs, continuation: BlockCont::Finish},
+                    then: Block {type_, expr:Expr{instrs}},
                     else_: None})
             )
         )
