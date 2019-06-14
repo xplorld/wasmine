@@ -18,11 +18,10 @@ pub const PAGE_SIZE: usize = 65535;
 pub struct Module {
     pub types: Vec<Type>,
     pub funcs: Vec<Function>,
-    // tables: Vec<Table>, // only have one for now
-    // have zero or one mem...
+    pub table: Option<Table>,
     pub mem: Option<Mem>,
     pub globals: Vec<Global>,
-    // elem: Vec<Elem>,
+    pub elems: Vec<Elem>,
     // data: Vec<Data>,
     // start: Option<Start>,
     // imports: Vec<Import>,
@@ -30,7 +29,7 @@ pub struct Module {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Type {
     // args could have 0 or more arguments
     pub args: Vec<ValType>,
@@ -48,10 +47,6 @@ impl Type {
     }
 }
 
-//TODO: do we need a enum of Function and FuncRef?
-#[derive(Debug)]
-pub struct FuncRef {}
-
 #[derive(Debug)]
 pub struct Code {
     pub locals: Vec<ValType>,
@@ -68,7 +63,8 @@ pub struct Function {
 #[derive(Debug)]
 pub struct Table {
     pub limits: Limits,
-    pub elemtype: FuncRef,
+    // only elemtype available is FuncRef
+    // pub elemtype: FuncRef,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,9 +109,10 @@ pub enum Mut {
 
 #[derive(Debug)]
 pub struct Elem {
-    table: Idx,
-    offset: Expr,
-    init: Vec<Idx>, // index of function
+    // table is always 0
+    // table: Idx,
+    pub offset: Expr,
+    pub init: Vec<Idx>, // index of function
 }
 
 #[derive(Debug)]
@@ -166,21 +163,14 @@ pub struct Expr {
 
 impl Expr {
     /**
-     * try to convert a vector of instrs into an Expr.
-     * The input instrs's Labels may have uninitialized continuations.
-     * If the instrs fails validation, return None,
-     * Else, return Some(expr) with continuations properly set up.
-     */
-    pub fn try_from(instrs: Vec<Instr>) -> Option<Expr> {
-        //TODO
-        None
-    }
-
-    /**
      * If `self` is a constant, evaluate it and return the result.
      * Else, return `None`.
+     * 
+     * According to spec, a constant expression can either be a t.const c,
+     * or a global.get whose index points to an imported global.
+     * 
+     * TODO: support 
      *
-     * Currently only support returning one value.
      */
     pub fn const_val(&self) -> Option<Val> {
         if self.instrs.len() == 1 {

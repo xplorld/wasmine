@@ -60,9 +60,43 @@ impl MemInst {
     }
 }
 
+#[derive(Debug)]
+struct TableInst {
+    // idx of funcs
+    // usize::max_value() as the "uninitialized" state.
+    // sorry for not using Option<Idx> which would add more boilerplate code...
+    entries: Vec<Idx>,
+    max: Option<usize>,
+}
+
+impl TableInst {
+    fn new(table: &Table) -> TableInst {
+        TableInst {
+            entries: vec![usize::max_value(); table.limits.min],
+            max: table.limits.max,
+        }
+    }
+
+    fn instantiate(module: &Module) -> Result<Option<TableInst>, Trap> {
+        match &module.table {
+            None => Ok(None),
+            Some(table) => {
+                let mut ti = TableInst::new(&table);
+                for elem in &module.elems {
+                    let offset: u32 = elem.offset.const_val().ok_or(Trap {})?.try_into()?;
+                    let offset = offset as usize;
+                    let tail = offset + elem.init.len();
+                    assert_or_trap(tail <= ti.entries.len())?;
+                    ti.entries[offset..tail].copy_from_slice(&elem.init[..]);
+                }
+                Ok(Some(ti))
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
-pub struct GlobalInst {
+struct GlobalInst {
     mut_: Mut,
     val: Val,
 }
@@ -87,6 +121,10 @@ pub struct FuncInst<'a> {
 impl<'a> FuncInst<'a> {
     pub fn new_locals(&'a self) -> Vec<Val> {
         self.code.locals.iter().map(Val::from).collect()
+    }
+
+    pub fn type_matches(&self, type_: &Type) -> Result<(), Trap> {
+        assert_or_trap(self.type_ == type_)
     }
 }
 
@@ -125,6 +163,15 @@ impl ValStack {
         match self.stack.pop() {
             Some(val) => Ok(val),
             _ => Err(Trap {}),
+        }
+    }
+
+    fn pop_last_n(&mut self, n: Idx) -> Result<Vec<Val>, Trap> {
+        let len = self.stack.len();
+        if n > len {
+            Err(Trap)
+        } else {
+            Ok(self.stack.drain(len - n..).collect())
         }
     }
 
@@ -256,8 +303,10 @@ impl<'a> Frame<'a> {
 
 #[derive(Debug)]
 pub struct Runtime<'a> {
+    types: &'a Vec<Type>,
     funcs: Vec<FuncInst<'a>>,
     mem: Option<MemInst>,
+    table: Option<TableInst>,
     globals: Vec<GlobalInst>,
 }
 
@@ -279,9 +328,11 @@ impl<'a> Runtime<'a> {
 
     fn instantiate(module: &'a Module) -> Result<Runtime<'a>, Trap> {
         let rt = Runtime {
-            mem: module.mem.map(|m| MemInst::new(&m)),
-            globals: module.globals.iter().map(GlobalInst::new).collect(),
+            types: &module.types,
             funcs: Runtime::instantiate_functions(module)?,
+            mem: module.mem.map(|m| MemInst::new(&m)),
+            table: TableInst::instantiate(module)?,
+            globals: module.globals.iter().map(GlobalInst::new).collect(),
         };
         Ok(rt)
     }
@@ -383,6 +434,27 @@ impl<'a> Runtime<'a> {
             }
         }
     }
+
+    fn invoke_on_stack<'b>(&mut self, stack: &mut ValStack, funcaddr: Idx) -> Result<(), Trap>
+    where
+        'a: 'b,
+    {
+        use self::StepNormalResult::*;
+
+        let func = self.funcs.get(funcaddr).ok_or(Trap {})?;
+        let arity = func.type_.arity();
+        let args = stack.pop_last_n(arity)?;
+
+        let ret = self.invoke(*func, &args[..])?;
+
+        // there is no need to check return type, as assured by validation
+        if let Some(val) = ret {
+            stack.push(val);
+        }
+
+        Ok(())
+    }
+
 
     /**
      * Execute one instruction, by mutating local states in `frame` and global
@@ -503,32 +575,18 @@ impl<'a> Runtime<'a> {
             }
             Instr::BrTable(args) => unimplemented!(),
             Instr::Return => return stack.return_value(frame.arity),
-            Instr::Call(idx) => {
-                let func = self.funcs[*idx];
-                let arity = func.type_.arity();
-                let len = stack.len();
-                let args: Vec<Val> = stack
-                    .stack
-                    .drain(len - arity..) // last `arity` vals
-                    .collect();
+            Instr::Call(idx) => self.invoke_on_stack(stack, *idx)?,
+            Instr::CallIndirect(typeidx) => {
+                let tableidx: u32 = stack.pop()?.try_into()?;
+                let entries = &self.table.as_ref().ok_or(Trap {})?.entries;
+                let funcidx = *entries.get(tableidx as usize).ok_or(Trap {})?;
+                let func = self.funcs.get(funcidx).ok_or(Trap {})?;
 
-                // func.type_.ret could be None, so we save this match
-                match (self.invoke(func, &args[..]), &func.type_.ret) {
-                    (Ok(Some(val)), Some(ret_type)) => {
-                        debug!("invoke, args {:?}, ret {:?}\n", &args, val);
-                        assert_or_trap(val.matches(ret_type))?;
-                        //succeeded, push ret value back to current stack
-                        stack.push(val);
-                    }
-                    // also succeeded, but returned nothing
-                    (Ok(None), None) => {}
-                    _ => {
-                        return Err(Trap {});
-                    }
-                }
+                let type_ = self.types.get(*typeidx).ok_or(Trap {})?;
+                func.type_matches(type_)?;
+
+                self.invoke_on_stack(stack, funcidx)?
             }
-
-            Instr::CallIndirect(idx) => unimplemented!(),
             /* numerics */
             Instr::I32Load(memarg) => self.load::<u32, u32>(frame, memarg)?,
             Instr::I64Load(memarg) => self.load::<u64, u64>(frame, memarg)?,
@@ -775,6 +833,8 @@ mod test {
                 },
             }],
             globals: vec![],
+            table: None,
+            elems: vec![],
             mem: None,
         };
 

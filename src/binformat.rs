@@ -1,5 +1,4 @@
 use crate::instrs::Instr;
-
 use crate::types::*;
 use nom::bytes::complete::tag;
 use nom::combinator::opt;
@@ -8,6 +7,23 @@ use nom::number::complete::{le_f32, le_f64, le_u32, le_u64, le_u8};
 use nom::IResult;
 
 use std::str::from_utf8;
+
+fn flatten<T>(o: Option<Option<T>>) -> Option<T> {
+    o.unwrap_or(None)
+}
+
+fn zero_or_one<T, F>(i: &[u8], f: F) -> IResult<&[u8], Option<T>> where
+    F: Fn(&[u8]) -> IResult<&[u8], T> {
+        let (i, count) = le_u32(i)?;
+        match count {
+            0 => Ok((i, None)),
+            1 => {
+                let (i, t) = f(i)?;
+                Ok((i, Some(t)))
+            }
+            _ => Err(nom::Err::Error((i, ErrorKind::Verify)))
+        }
+}
 
 /**
  * both is None -> Some(empty)
@@ -103,12 +119,11 @@ named!(memtype<Mem>, map!(limits, |limits| Mem { limits }));
 named!(
     tabletype<Table>,
     do_parse!(
-        call!(tag_byte, 0x70)
-            >> limits: limits
-            >> (Table {
-                limits,
-                elemtype: FuncRef {}
-            })
+        call!(tag_byte, 0x70) >> // funcref
+        limits: limits >>
+        (Table {
+            limits,
+        })
     )
 );
 
@@ -373,6 +388,16 @@ named!(
 );
 
 named!(
+    elem<Elem>,
+    do_parse!(
+        call!(tag_byte, 0x00) >> // table idx
+        instrs: expr >>
+        init: length_count!(le_usize, le_usize) >>
+        (Elem {offset: Expr {instrs}, init})
+    )
+);
+
+named!(
     section_custom<()>,
     do_parse!(call!(tag_byte, 0x00) >> size: le_usize >> take!(size) >> (()))
 );
@@ -398,24 +423,20 @@ named!(
 
 //TODO
 named!(
-    section_table<()>,
-    do_parse!(call!(tag_byte, 0x04) >> size: le_usize >> take!(size) >> (()))
+    section_table<Option<Table>>,
+    do_parse!(
+        call!(tag_byte, 0x04) >>
+        opt_table: call!(zero_or_one, tabletype) >>
+        (opt_table))
 );
 
 // expects 0 or 1 Mem in a vector.
-// if is 0, return a Mem with zero limit.
 named!(
-    section_mem<Mem>,
+    section_mem<Option<Mem>>,
     do_parse!(
         call!(tag_byte, 0x05)
-            >> mems: verify!(length_count!(le_usize, memtype), |mems: &Vec<Mem>| mems
-                .len()
-                <= 1)
-            >> (if mems.is_empty() {
-                Mem::empty()
-            } else {
-                mems[0]
-            }) //copied but come on
+            >> mem: call!(zero_or_one, memtype) >>
+            (mem)
     )
 );
 
@@ -439,8 +460,12 @@ named!(
 
 //TODO
 named!(
-    section_element<()>,
-    do_parse!(call!(tag_byte, 0x09) >> size: le_usize >> take!(size) >> (()))
+    section_elem<Vec<Elem>>,
+    do_parse!(
+        call!(tag_byte, 0x09) >> 
+        elems: length_count!(le_usize, elem) >>
+        (elems)
+    )
 );
 
 named!(
@@ -455,7 +480,7 @@ named!(
 );
 
 pub fn module(i: &[u8]) -> IResult<&[u8], Module> {
-    let (i, _) = tag(&[0x00, 0x61, 0x73, 0x6D])(i)?;
+    let (i, _) = tag(&[0x00, 0x61, 0x73, 0x6D])(i)?; //magic
     let (i, _) = tag(&[0x01, 0x00, 0x00, 0x00])(i)?; //version
     let (i, _) = opt(section_custom)(i)?;
     let (i, types) = opt(section_type)(i)?;
@@ -464,11 +489,15 @@ pub fn module(i: &[u8]) -> IResult<&[u8], Module> {
     let (i, _) = opt(section_custom)(i)?;
     let (i, functypes) = opt(section_func)(i)?;
     let (i, _) = opt(section_custom)(i)?;
-    let (i, tables) = opt(section_table)(i)?;
+    let (i, table) = opt(section_table)(i)?;
     let (i, _) = opt(section_custom)(i)?;
     let (i, mem) = opt(section_mem)(i)?;
     let (i, _) = opt(section_custom)(i)?;
     let (i, globals) = opt(section_global)(i)?;
+    let (i, _) = opt(section_custom)(i)?;
+    //export
+    //start
+    let (i, elems) = opt(section_elem)(i)?;
     let (i, _) = opt(section_custom)(i)?;
     let (i, codes) = opt(section_code)(i)?;
     let (i, _) = opt(section_custom)(i)?;
@@ -482,8 +511,10 @@ pub fn module(i: &[u8]) -> IResult<&[u8], Module> {
         Module {
             types: types.unwrap_or_else(|| vec![]),
             funcs,
-            mem: mem,
+            table: flatten(table),
+            mem: flatten(mem),
             globals: globals.unwrap_or_else(|| vec![]),
+            elems: elems.unwrap_or_else(|| vec![]),
         },
     ))
 }

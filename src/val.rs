@@ -3,7 +3,7 @@ use crate::runtime::Trap;
 
 use byteorder::{ByteOrder, LittleEndian};
 use std::convert::TryFrom;
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum ValType {
     I32,
     I64,
