@@ -19,9 +19,8 @@ pub struct Module {
     pub types: Vec<Type>,
     pub funcs: Vec<Function>,
     // tables: Vec<Table>, // only have one for now
-    // have one and only one mem
-    // if there are none, we instead have a Mem with zero min and max
-    pub mem: Mem,
+    // have zero or one mem...
+    pub mem: Option<Mem>,
     pub globals: Vec<Global>,
     // elem: Vec<Elem>,
     // data: Vec<Data>,
@@ -85,7 +84,12 @@ pub struct Mem {
 
 impl Mem {
     pub fn empty() -> Self {
-        Mem{limits: Limits{min: 0, max: Some(0)}}
+        Mem {
+            limits: Limits {
+                min: 0,
+                max: Some(0),
+            },
+        }
     }
 }
 

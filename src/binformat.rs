@@ -482,7 +482,7 @@ pub fn module(i: &[u8]) -> IResult<&[u8], Module> {
         Module {
             types: types.unwrap_or_else(|| vec![]),
             funcs,
-            mem: mem.unwrap_or_else(Mem::empty),
+            mem: mem,
             globals: globals.unwrap_or_else(|| vec![]),
         },
     ))

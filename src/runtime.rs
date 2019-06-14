@@ -257,7 +257,7 @@ impl<'a> Frame<'a> {
 #[derive(Debug)]
 pub struct Runtime<'a> {
     funcs: Vec<FuncInst<'a>>,
-    mem: MemInst,
+    mem: Option<MemInst>,
     globals: Vec<GlobalInst>,
 }
 
@@ -279,7 +279,7 @@ impl<'a> Runtime<'a> {
 
     fn instantiate(module: &'a Module) -> Result<Runtime<'a>, Trap> {
         let rt = Runtime {
-            mem: MemInst::new(&module.mem),
+            mem: module.mem.map(|m| MemInst::new(&m)),
             globals: module.globals.iter().map(GlobalInst::new).collect(),
             funcs: Runtime::instantiate_functions(module)?,
         };
@@ -308,9 +308,9 @@ impl<'a> Runtime<'a> {
         let base: u32 = frame.valstack.pop()?.try_into()?;
         let eff: usize = (base + memarg.offset).try_into().unwrap();
         let tail = eff + mem::size_of::<U>();
-        let data = &self.mem.data;
+        let data = &self.mem.as_ref().ok_or(Trap {})?.data;
         assert_or_trap(data.len() < tail)?;
-        let val: T = U::from_slice(&self.mem.data[eff..tail]).as_();
+        let val: T = U::from_slice(&data[eff..tail]).as_();
         frame.valstack.push(val.into());
         Ok(())
     }
@@ -337,7 +337,7 @@ impl<'a> Runtime<'a> {
 
         let eff = (base + memarg.offset) as usize;
         let tail = eff + mem::size_of::<U>();
-        let data = &mut self.mem.data;
+        let data = &mut self.mem.as_mut().ok_or(Trap {})?.data;
         assert_or_trap(data.len() >= tail)?;
         U::to_slice(val, &mut data[eff..tail]);
         Ok(())
@@ -775,7 +775,7 @@ mod test {
                 },
             }],
             globals: vec![],
-            mem: Mem::empty(),
+            mem: None,
         };
 
         let mut rt = Runtime::instantiate(&module)?;
